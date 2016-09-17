@@ -186,7 +186,9 @@ jt.ROMLoader = function() {
 
     var showError = function(message) {
         jt.Util.log("" + message);
-        jt.Util.message("Could not load ROM:\n\n" + message);
+        if (Javatari.SHOW_ERRORS) {
+            jt.Util.message("Could not load ROM:\n\n" + message);
+        }
     };
 
     var createFileInputElement = function (element) {
@@ -215,5 +217,6 @@ jt.ROMLoader = function() {
 
 
     Javatari.loadROMFromURL = this.loadFromURL;
+    Javatari.loadROM = loadContent;
 
 };
