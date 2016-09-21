@@ -21,11 +21,22 @@ jt.Tia = function(pCpu, pPia) {
         audioSignal.signalOff();
     };
 
+    this.disableDebug = function() {
+      debugCondition = null;
+    }
+
+    this.setDebugCondition = function(debugCond) {
+      debugCondition = debugCond;
+    }
+
     this.frame = function() {
         if (debugPause)
             if (debugPauseMoreFrames-- <= 0) return;
+        var debugCond = debugCondition;
+        var breakClock = -1;
         do {
             clock = 0;
+            if (debugCond && breakClock < 0 && debugCond()) { breakClock = clock; }
             // Send the first clock/3 pulse to the CPU and PIA, perceived by TIA at clock 0
             bus.clockPulse();
             // Releases the CPU at the beginning of the line in case a WSYNC has halted it
@@ -34,6 +45,7 @@ jt.Tia = function(pCpu, pPia) {
             for (clock = 3; clock < HBLANK_DURATION; clock += 3) {		// 3 .. 66
                 if (!repeatLastLine) checkRepeatMode();
                 // Send clock/3 pulse to the CPU and PIA each 3rd TIA cycle
+                if (debugCond && breakClock < 0 && debugCond()) { breakClock = clock; }
                 bus.clockPulse();
             }
             // 67
@@ -47,6 +59,7 @@ jt.Tia = function(pCpu, pPia) {
                 if (vBlankDecodeActive) vBlankClockDecode();
                 // Send clock/3 pulse to the CPU and PIA each 3rd TIA cycle
                 if (--subClock3 === 0) {
+                    if (debugCond && breakClock < 0 && debugCond()) { breakClock = clock; }
                     bus.clockPulse();
                     subClock3 = 3;
                 }
@@ -59,6 +72,11 @@ jt.Tia = function(pCpu, pPia) {
             // Second Audio Sample. 2 samples per scan line ~ 31440 KHz
             audioSignal.audioClockPulse();
             finishLine();
+            if (breakClock >= 0) {
+              for (var i=breakClock; i<LINE_WIDTH; i++)
+                linePixels[i] ^= 0xffffff;
+              breakClock = 0;
+            }
             // Send the finished line to the output and check if monitor vSynched (true returned)
         } while(!videoSignal.nextLine(linePixels, vSyncOn));
         // Ask for a refresh of the frame
@@ -1285,6 +1303,7 @@ jt.Tia = function(pCpu, pPia) {
     var debugPixels = jt.Util.arrayFill(new Array(LINE_WIDTH), 0);
     var debugPause = false;
     var debugPauseMoreFrames = 0;
+    var debugCondition = null;
 
     var vSyncColor = VSYNC_COLOR;
     var vBlankColor = VBLANK_COLOR;

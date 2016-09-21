@@ -64,6 +64,9 @@ jt.Clock = function(clockDriven, pCyclesPerSecond) {
         running = false;
     };
 
+    this.isRunning = function() {
+        return running;
+    }
 
     var running = false;
 

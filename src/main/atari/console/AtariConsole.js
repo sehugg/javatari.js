@@ -492,6 +492,95 @@ jt.AtariConsole = function() {
         go();
     };
 
+    this.pause = pause;
+    this.go = go;
+    this.isRunning = function() {
+      return mainClock.isRunning();
+    }
+
+    var debugSavedState = null;
+    var debugBreakState = null;
+    var debugTargetClock = 0;
+    var debugTicks = 0;
+
+    this.onBreakpointHit = null;
+
+    this.disableDebug = function() {
+      debugSavedState = null;
+      debugTargetClock = 0;
+      tia.disableDebug();
+    }
+
+    this.setDebugCondition = function(debugCond) {
+      if (debugSavedState) {
+        loadState(debugSavedState);
+      } else {
+        debugSavedState = saveState();
+      }
+      debugTicks = 0;
+      tia.setDebugCondition(debugCond);
+      if (!this.isRunning())
+        go();
+    }
+
+    this.breakpointHit = function() {
+      console.log("Breakpoint at clk", debugTicks);
+      debugBreakState = saveState();
+      pause();
+      if (this.onBreakpointHit) {
+        this.onBreakpointHit(debugBreakState);
+      }
+    }
+
+    this.debugSingleStepCPUClock = function() {
+      var self = this;
+      var previousPC = -1;
+      self.setDebugCondition(function() {
+        if (debugTicks++ >= debugTargetClock) {
+          if (previousPC < 0) {
+            previousPC = cpu.saveState().PC;
+          } else {
+            var thisPC = cpu.saveState().PC;
+            if (thisPC != previousPC) {
+              //console.log(previousPC.toString(16), thisPC.toString(16));
+              debugTargetClock = debugTicks;
+              self.breakpointHit();
+              return true;
+            }
+          }
+        }
+        return false;
+      });
+    }
+
+    this.debugToPC = function(targetPC) {
+      var self = this;
+      self.setDebugCondition(function() {
+        if (debugTicks++ >= debugTargetClock) {
+          var thisPC = cpu.saveState().PC;
+          if (thisPC == targetPC) {
+            self.breakpointHit();
+            debugTargetClock = debugTicks;
+            return true;
+          } else {
+            return false;
+          }
+        }
+      });
+    }
+
+    this.debugToTIAClock = function(tiaclock) {
+      var self = this;
+      self.setDebugCondition(function() {
+        if (debugTicks >= tiaclock) {
+          self.breakpointHit();
+          return true;
+        } else {
+          debugTicks += 3;
+          return false;
+        }
+      });
+    }
 
     init();
 
