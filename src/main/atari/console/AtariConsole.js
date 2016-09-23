@@ -536,6 +536,7 @@ jt.AtariConsole = function() {
       var self = this;
       var previousPC = -1;
       self.setDebugCondition(function() {
+        //console.log(cpu.saveState().PC.toString(16), previousPC.toString(16), debugTicks, debugTargetClock);
         if (debugTicks++ >= debugTargetClock) {
           if (previousPC < 0) {
             previousPC = cpu.saveState().PC;
@@ -565,19 +566,6 @@ jt.AtariConsole = function() {
           } else {
             return false;
           }
-        }
-      });
-    }
-
-    this.debugToTIAClock = function(tiaclock) {
-      var self = this;
-      self.setDebugCondition(function() {
-        if (debugTicks >= tiaclock) {
-          self.breakpointHit();
-          return true;
-        } else {
-          debugTicks += 3;
-          return false;
         }
       });
     }

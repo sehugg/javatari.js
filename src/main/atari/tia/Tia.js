@@ -34,11 +34,14 @@ jt.Tia = function(pCpu, pPia) {
             if (debugPauseMoreFrames-- <= 0) return;
         var debugCond = debugCondition;
         var breakClock = -1;
+        var debugScanOverflow = Javatari.DEBUG_SCANLINE_OVERFLOW;
         do {
             clock = 0;
             if (debugCond && breakClock < 0 && debugCond()) { breakClock = clock; }
             // Send the first clock/3 pulse to the CPU and PIA, perceived by TIA at clock 0
             bus.clockPulse();
+            // Log when we are not in WSYNC (!RDY) at the start of a line
+            if (debugScanOverflow && cpu.isRDY()) { console.log("Scan overflow @ " + cpu.saveState().PC.toString(16)); }
             // Releases the CPU at the beginning of the line in case a WSYNC has halted it
             cpu.setRDY(true);
             // HBLANK period
@@ -72,6 +75,7 @@ jt.Tia = function(pCpu, pPia) {
             // Second Audio Sample. 2 samples per scan line ~ 31440 KHz
             audioSignal.audioClockPulse();
             finishLine();
+            // If breakpoint hit, invert pixels on remainder of screen
             if (breakClock >= 0) {
               for (var i=breakClock; i<LINE_WIDTH; i++)
                 linePixels[i] ^= 0xffffff;
@@ -1304,6 +1308,7 @@ jt.Tia = function(pCpu, pPia) {
     var debugPause = false;
     var debugPauseMoreFrames = 0;
     var debugCondition = null;
+    var debugScanOverflow = true;
 
     var vSyncColor = VSYNC_COLOR;
     var vBlankColor = VBLANK_COLOR;

@@ -22,7 +22,8 @@ Javatari = {
     SCREEN_NATURAL_FPS:             60,                         // 60, 50 fps
     AUDIO_BUFFER_SIZE:              512,                        // 256, 512, 1024, 2048, 4096, 8192. More buffer = more delay
     IMAGES_PATH:                    window.Javatari_IMAGES_PATH || "javatari/",
-    SHOW_ERRORS:		    true
+    SHOW_ERRORS:		                true,
+    DEBUG_SCANLINE_OVERFLOW:        false,
 
 };
 

@@ -24,6 +24,10 @@ jt.M6502 = function() {
         RDY = boo;
     };
 
+    this.isRDY = function() {
+        return RDY;
+    }
+
     this.reset = function() {
         I = 1;
         T = -1;
