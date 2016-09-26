@@ -11,7 +11,11 @@ jt.WebAudioSpeaker = function() {
         createAudioContext();
         if (!audioContext) return;
 
-        processor = audioContext.createScriptProcessor(Javatari.AUDIO_BUFFER_SIZE, 0, 1);
+        if ( typeof audioContext.createScriptProcessor === 'function') {
+          processor=audioContext.createScriptProcessor(Javatari.AUDIO_BUFFER_SIZE, 0, 1);
+        } else {
+          processor=audioContext.createJavaScriptNode(Javatari.AUDIO_BUFFER_SIZE, 0, 1);
+        }
         processor.onaudioprocess = onAudioProcess;
         this.play();
     };

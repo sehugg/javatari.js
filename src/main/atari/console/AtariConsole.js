@@ -29,6 +29,7 @@ jt.AtariConsole = function() {
         if (videoStandardAutoDetectionInProgress)
             videoStandardAutoDetectionTry();
 
+        debugFrameStartClock = debugClock;
         controlsSocket.clockPulse();
         tia.frame();
         this.framesGenerated++;
@@ -501,9 +502,14 @@ jt.AtariConsole = function() {
     var debugSavedState = null;
     var debugBreakState = null;
     var debugTargetClock = 0;
-    var debugTicks = 0;
+    var debugClock = 0;
+    var debugFrameStartClock = 0;
 
     this.onBreakpointHit = null;
+
+    this.getClocksFromFrameStart = function() {
+      return debugClock - debugFrameStartClock;
+    }
 
     this.disableDebug = function() {
       debugSavedState = null;
@@ -517,14 +523,14 @@ jt.AtariConsole = function() {
       } else {
         debugSavedState = saveState();
       }
-      debugTicks = 0;
+      debugClock = 0;
       tia.setDebugCondition(debugCond);
       if (!this.isRunning())
         go();
     }
 
     this.breakpointHit = function() {
-      console.log("Breakpoint at clk", debugTicks);
+      console.log("Breakpoint at clk", debugClock);
       debugBreakState = saveState();
       pause();
       if (this.onBreakpointHit) {
@@ -536,15 +542,15 @@ jt.AtariConsole = function() {
       var self = this;
       var previousPC = -1;
       self.setDebugCondition(function() {
-        //console.log(cpu.saveState().PC.toString(16), previousPC.toString(16), debugTicks, debugTargetClock);
-        if (debugTicks++ >= debugTargetClock) {
+        //console.log(cpu.saveState().PC.toString(16), previousPC.toString(16), debugClock, debugTargetClock);
+        if (debugClock++ >= debugTargetClock) {
+          var thisState = cpu.saveState();
           if (previousPC < 0) {
-            previousPC = cpu.saveState().PC;
+            previousPC = thisState.PC;
           } else {
-            var thisPC = cpu.saveState().PC;
-            if (thisPC != previousPC) {
+            if (thisState.PC != previousPC) {
               //console.log(previousPC.toString(16), thisPC.toString(16));
-              debugTargetClock = debugTicks;
+              debugTargetClock = debugClock;
               self.breakpointHit();
               return true;
             }
@@ -557,11 +563,11 @@ jt.AtariConsole = function() {
     this.debugToPC = function(targetPC) {
       var self = this;
       self.setDebugCondition(function() {
-        if (debugTicks++ >= debugTargetClock) {
+        if (debugClock++ >= debugTargetClock) {
           var thisPC = cpu.saveState().PC;
           if (thisPC == targetPC) {
             self.breakpointHit();
-            debugTargetClock = debugTicks;
+            debugTargetClock = debugClock;
             return true;
           } else {
             return false;

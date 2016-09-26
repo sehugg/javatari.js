@@ -57,13 +57,17 @@ jt.TiaAudioSignal = function() {
         //if (nextSampleToGenerate < nextSampleToRetrieve)
         //    console.log("WRAP: " + nextSampleToGenerate );
 
+        // gently guide the generation thread closer to the retrieve thread
+        if (nextSampleToGenerate - nextSampleToRetrieve > Javatari.AUDIO_BUFFER_SIZE*2) {
+          nextSampleToGenerate--;
+        }
+
         var missing = nextSampleToGenerate >= nextSampleToRetrieve
             ? quant - (nextSampleToGenerate - nextSampleToRetrieve)
             : quant - (MAX_SAMPLES - nextSampleToRetrieve + nextSampleToGenerate);
 
         if (missing > 0) {
             generateNextSamples(missing, true);
-            //Util.log(">>> Extra samples generated: " + missing);
         } else {
             //Util.log(">>> No missing samples");
         }
