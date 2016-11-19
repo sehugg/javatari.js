@@ -29,6 +29,12 @@ jt.AtariConsole = function() {
         if (videoStandardAutoDetectionInProgress)
             videoStandardAutoDetectionTry();
 
+        // save state before frame output
+        if (debugClock > 0) {
+          debugTargetClock -= debugClock;
+          debugClock = 0;
+          debugSavedState = saveState();
+        }
         debugFrameStartClock = debugClock;
         controlsSocket.clockPulse();
         tia.frame();
@@ -511,9 +517,15 @@ jt.AtariConsole = function() {
       return debugClock - debugFrameStartClock;
     }
 
-    this.disableDebug = function() {
+    this.resetDebug = function() {
       debugSavedState = null;
       debugTargetClock = 0;
+      debugClock = 0;
+      debugFrameStartClock = 0;
+    }
+
+    this.disableDebug = function() {
+      this.resetDebug();
       tia.disableDebug();
     }
 
@@ -548,9 +560,9 @@ jt.AtariConsole = function() {
           if (previousPC < 0) {
             previousPC = thisState.PC;
           } else {
-            if (thisState.PC != previousPC) {
+            if (thisState.PC != previousPC && thisState.T == 0) {
               //console.log(previousPC.toString(16), thisPC.toString(16));
-              debugTargetClock = debugClock;
+              debugTargetClock = debugClock-1;
               self.breakpointHit();
               return true;
             }
