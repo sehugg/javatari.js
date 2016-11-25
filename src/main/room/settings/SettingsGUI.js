@@ -501,6 +501,7 @@ SettingsGUI.css = function() {
         'right: 0;' +
         'bottom: 0;' +
         'left: 0;' +
+        'z-index: 1000;' +
         'visibility: hidden;' +
         'opacity: 0;' +
         'background-color: rgba(0, 0, 0, 0.6);' +
@@ -859,4 +860,3 @@ SettingsGUI.css = function() {
         'color: transparent;' +
         '}';
 };
-

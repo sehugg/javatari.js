@@ -278,4 +278,3 @@ jt.Settings = function() {
     var KEY_ESC = 27;        // VK_ESC
 
 };
-
