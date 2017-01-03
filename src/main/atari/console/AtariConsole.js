@@ -572,12 +572,13 @@ jt.AtariConsole = function() {
       });
     }
 
-    this.debugToPC = function(targetPC) {
+    this.debugEval = function(evalfunc) {
       var self = this;
       self.setDebugCondition(function() {
-        if (debugClock++ >= debugTargetClock) {
-          var thisPC = cpu.saveState().PC;
-          if (thisPC == targetPC) {
+        if (debugClock++ > debugTargetClock) {
+          var cpuState = cpu.saveState();
+          cpuState.PC = (cpuState.PC-1)&0xffff;
+          if (evalfunc(cpuState)) {
             self.breakpointHit();
             debugTargetClock = debugClock;
             return true;

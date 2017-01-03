@@ -68,7 +68,7 @@ jt.M6502 = function() {
     var branchOffsetCrossAdjust = 0;
 
     // Vectors
-    //var NMI_VECTOR = 0xfffa;
+    var NMI_VECTOR = 0xfffa;
     var RESET_VECTOR = 0xfffc;
     var IRQ_VECTOR = 0xfffe;
 
@@ -1638,6 +1638,22 @@ jt.M6502 = function() {
         ];
     }
 
+    function NMI() {
+        return [
+            fetchOpcodeAndDecodeInstruction,
+            fetchDataFromImmediate,
+            function() {
+                if (self.debug) self.breakpoint("NMI " + data);
+                pushToStack((PC >>> 8) & 0xff);
+            },
+            function() { pushToStack(PC & 0xff); },
+            function() { pushToStack(getStatusBits()); },
+            function() { AD = bus.read(NMI_VECTOR); },
+            function() { AD |= bus.read(NMI_VECTOR + 1) << 8; },
+            function() { PC = AD; fetchNextOpcode(); }
+        ];
+    }
+
     function RTI() {
         return [
             fetchOpcodeAndDecodeInstruction,
@@ -1854,5 +1870,42 @@ jt.M6502 = function() {
         var end = performance.now();
         jt.Util.message("Done running " + cycles + " cycles in " + (end - start) + " ms.");
     };
+
+    var setInterruptAndWait = function(interruptFunction) {
+      var n = 0;
+      // wait for current instruction
+      while (T != 0 && n < 20) {
+        self.clockPulse();
+        n++;
+      }
+      // set NMI and wait
+      instruction = interruptFunction();
+      T = 1;
+      PC--;
+      while (T != 0 && n < 20) {
+        self.clockPulse();
+        n++;
+      }
+      // return total number of CPU cycles taken
+      return n;
+    }
+
+    this.setNMIAndWait = function() {
+      return setInterruptAndWait(NMI);
+    }
+
+    this.setIRQAndWait = function() {
+      return setInterruptAndWait(BRK);
+    }
+
+    this.executeInstruction = function() {
+      var n = 0;
+      // wait for current instruction
+      do {
+        self.clockPulse();
+        n++;
+      } while (T != 0 && n < 20);
+      return n;
+    }
 
 };
