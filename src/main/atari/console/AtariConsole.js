@@ -555,7 +555,7 @@ jt.AtariConsole = function() {
       var previousPC = -1;
       self.setDebugCondition(function() {
         //console.log(cpu.saveState().PC.toString(16), previousPC.toString(16), debugClock, debugTargetClock);
-        if (debugClock++ >= debugTargetClock) {
+        if (debugClock++ > debugTargetClock) {
           var thisState = cpu.saveState();
           if (previousPC < 0) {
             previousPC = thisState.PC;
@@ -566,6 +566,26 @@ jt.AtariConsole = function() {
               self.breakpointHit();
               return true;
             }
+          }
+        }
+        return false;
+      });
+    }
+
+    this.debugStepBackInstruction = function() {
+      var self = this;
+      var prevState;
+      var prevClock;
+      this.setDebugCondition(function() {
+        if (debugClock++ >= debugTargetClock && prevState) {
+          loadState(prevState);
+          debugTargetClock = prevClock-1;
+          self.breakpointHit();
+          return true;
+        } else if (debugClock > debugTargetClock-86 && debugClock < debugTargetClock) {
+          if (cpu.saveState().T == 0) {
+            prevState = saveState();
+            prevClock = debugClock;
           }
         }
         return false;
