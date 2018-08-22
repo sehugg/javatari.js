@@ -90,10 +90,8 @@ module.exports = function (grunt) {
                     maxLineLen: 7900,
                     mangle: {
                         toplevel: true,
-                        screw_ie8: true
                     },
                     compress: {
-                        screw_ie8: true,
                         sequences: true,
                         dead_code: true,
                         drop_debugger: true,
@@ -106,7 +104,6 @@ module.exports = function (grunt) {
                         if_return: true,
                         hoist_funs: true,
                         join_vars: true,
-                        cascade: true,
                         unsafe: false
                     }
                 },

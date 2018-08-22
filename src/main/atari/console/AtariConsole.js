@@ -608,6 +608,9 @@ jt.AtariConsole = function() {
         }
       });
     }
+    
+    this.saveState = saveState;
+    this.loadState = loadState;
 
     init();
 
