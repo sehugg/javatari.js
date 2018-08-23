@@ -163,6 +163,10 @@ jt.Pia = function() {
         T1024T               = state.T2;
     };
 
+    this.loadControlsState = function(state) {
+        SWCHA = state.SA;
+        SWCHB = state.SB;
+    }
 
     // State Variables ----------------------------------------------
 
