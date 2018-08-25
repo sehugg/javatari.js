@@ -8,26 +8,24 @@ jt.Clock = function(clockDriven, pCyclesPerSecond) {
     }
 
     this.go = function() {
-        running = true;
-        if(pausePending)
-            pausePending = false;
-        else
-            pulse();
+        if (!running) {
+            running = true;
+            if (!pulsing) pulse();
+        }
     };
 
-    this.pauseOnNextPulse = function(continuation) {
-        continuationAfterPause = continuation || null;
-        pausePending = true;
+    this.pauseOnNextPulse = function() {
+        running = false;
     };
 
     this.setFrequency = function(freq) {
-        if (running)
-            this.pauseOnNextPulse(function setFrequencyContinuation() {
-                internalSetFrequency(freq);
-                self.go();
-            });
-        else
+        if (pulsing) {
+            pause();
             internalSetFrequency(freq);
+            schedule();
+        } else {
+            internalSetFrequency(freq);
+        }
     };
 
     var internalSetFrequency = function(freq) {
@@ -37,19 +35,22 @@ jt.Clock = function(clockDriven, pCyclesPerSecond) {
     };
 
     var pulse = function() {
-        if (pausePending) {
+        if (!running) {
             pause();
-            if (continuationAfterPause) continuationAfterPause();
-            continuationAfterPause = null;
+            pulsing = false;
             return;
         }
-
+        pulsing = true;
         clockDriven.clockPulse();
+        schedule();
+    };
+    
+    var schedule = function() {
         if (useRequestAnimationFrame)
             animationFrame = window.requestAnimationFrame(pulse);
         else
             if (!interval) interval = window.setInterval(pulse, cycleTimeMs);
-    };
+    }
 
     var pause = function () {
         if (animationFrame) {
@@ -60,8 +61,6 @@ jt.Clock = function(clockDriven, pCyclesPerSecond) {
             window.clearTimeout(interval);
             interval = null;
         }
-        pausePending = false;
-        running = false;
     };
 
     this.isRunning = function() {
@@ -69,6 +68,7 @@ jt.Clock = function(clockDriven, pCyclesPerSecond) {
     }
 
     var running = false;
+    var pulsing = false;
 
     var cyclesPerSecond = null;
     var cycleTimeMs = null;
@@ -76,8 +76,6 @@ jt.Clock = function(clockDriven, pCyclesPerSecond) {
 
     var animationFrame = null;
     var interval = null;
-    var pausePending = false;
-    var continuationAfterPause = null;
 
     var NATURAL_FPS = Javatari.SCREEN_NATURAL_FPS;
 
