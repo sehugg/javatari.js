@@ -8,6 +8,11 @@ jt.WebAudioSpeaker = function() {
     };
 
     this.powerOn = function() {
+        if (audioContext) {
+            this.play();
+            return;
+        }
+        
         createAudioContext();
         if (!audioContext) return;
 
@@ -22,14 +27,17 @@ jt.WebAudioSpeaker = function() {
 
     this.powerOff = function() {
         this.mute();
-        audioContext = undefined;
     };
 
     this.play = function () {
+        if (!audioContext) return;
         if (processor) processor.connect(audioContext.destination);
+        audioContext.resume();
     };
 
     this.mute = function () {
+        if (!audioContext) return;
+        audioContext.suspend();
         if (processor) processor.disconnect();
     };
 
