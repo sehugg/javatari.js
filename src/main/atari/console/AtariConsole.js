@@ -171,12 +171,12 @@ jt.AtariConsole = function() {
     };
 
     var mainComponentsCreate = function() {
-        cpu = new jt.M6502();
-        pia = new jt.Pia();
-        tia = new jt.Tia(cpu, pia);
-        ram = new jt.Ram();
-        bus = new jt.Bus(cpu, tia, pia, ram);
-        mainClock = new jt.Clock(self, jt.VideoStandard.NTSC.fps);
+        self.cpu = cpu = new jt.M6502();
+        self.pia = pia = new jt.Pia();
+        self.tia = tia = new jt.Tia(cpu, pia);
+        self.ram = ram = new jt.Ram();
+        self.bus = bus = new jt.Bus(cpu, tia, pia, ram);
+        self.mainClock = mainClock = new jt.Clock(self, jt.VideoStandard.NTSC.fps);
     };
 
     var socketsCreate = function() {

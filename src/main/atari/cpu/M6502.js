@@ -1908,4 +1908,12 @@ jt.M6502 = function() {
       return n;
     }
 
+    this.getSP = function() { return SP; }
+    this.getPC = function() { return (PC-1) & 0xffff; }
+    this.getT = function() { return T; }
+    
+    this.isPCStable = function() {
+      return T == 0;
+    }
+
 };
