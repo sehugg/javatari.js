@@ -1181,6 +1181,28 @@ jt.Tia = function(pCpu, pPia) {
         if (debug) debugSetColors();						// IF debug is on, ensure debug colors are used
     };
 
+    this.saveControlsState = function() {
+        return {
+            P0btn:  controlsJOY0ButtonPressed,
+            P1btn:  controlsJOY1ButtonPressed,
+            Pground: paddleCapacitorsGrounded,
+            P0pos:  paddle0Position,
+            P0chg:  paddle0CapacitorCharge,
+            P1pos:  paddle1Position,
+            P1chg:  paddle1CapacitorCharge,
+        }
+    }
+
+    this.loadControlsState = function(state) {
+        controlsJOY0ButtonPressed = state.P0btn;
+        controlsJOY1ButtonPressed = state.P1btn;
+        paddleCapacitorsGrounded = state.Pground;
+        paddle0Position = state.P0pos;
+        paddle0CapacitorCharge = state.P0chg;
+        paddle1Position = state.P1pos;
+        paddle1CapacitorCharge = state.P1chg;
+    }
+
 
     // Constants  ------------------------------------------------
 

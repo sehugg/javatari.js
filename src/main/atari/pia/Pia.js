@@ -151,7 +151,7 @@ jt.Pia = function() {
         timerCount           = state.t;
         currentTimerInterval = state.c;
         lastSetTimerInterval = state.l;
-        // SWCHA           	 = state.SA;			// Do not load controls state
+        SWCHA           	 = state.SA;			// Do not load controls state
         SWACNT               = state.SAC;
         SWCHB                = state.SB;
         SWBCNT               = state.SBC;
@@ -162,6 +162,13 @@ jt.Pia = function() {
         TIM64T               = state.T6;
         T1024T               = state.T2;
     };
+
+    this.saveControlsState = function() {
+        return {
+            SA:     SWCHA,
+            SB:     SWCHB,
+        }
+    }
 
     this.loadControlsState = function(state) {
         SWCHA = state.SA;

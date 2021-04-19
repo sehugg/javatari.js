@@ -611,12 +611,19 @@ jt.AtariConsole = function() {
     
     this.saveState = saveState;
     this.loadState = loadState;
-    
+
+    this.getCPUState = function() {
+        return cpu.saveState();
+    }
     this.saveControlsState = function() {
-        return pia.saveState();
+        return {
+            pia: pia.saveControlsState(),
+            tia: tia.saveControlsState()
+        };
     }
     this.loadControlsState = function(state) {
-        pia.loadControlsState(state);
+        pia.loadControlsState(state.pia);
+        tia.loadControlsState(state.tia);
     }
     this.readAddress = function(a) {
         return bus.read(a);
