@@ -56,6 +56,20 @@ jt.Monitor = function() {
         return vSynched;
     };
 
+    this.getDisplayParameters = function() {
+        return {
+            signalWidth: signalWidth,
+            signalHeight: signalHeight,
+            displayWidth: displayWidth,
+            displayHeight: displayHeight,
+            displayOriginX: displayOriginX,
+            displayOriginY: displayOriginY,
+            displayScaleX: displayScaleX,
+            displayScaleY: displayScaleY,
+            crtMode: crtMode
+        };
+    };
+
     this.synchOutput = function() {
         refresh();
     };

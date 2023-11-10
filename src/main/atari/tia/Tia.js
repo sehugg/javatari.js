@@ -75,12 +75,6 @@ jt.Tia = function(pCpu, pPia) {
             // Second Audio Sample. 2 samples per scan line ~ 31440 KHz
             audioSignal.audioClockPulse();
             finishLine();
-            // If breakpoint hit, invert pixels on remainder of screen
-            if (breakClock >= 0) {
-              for (var i=breakClock; i<LINE_WIDTH; i++)
-                linePixels[i] ^= 0xffffff;
-              breakClock = 0;
-            }
             // Send the finished line to the output and check if monitor vSynched (true returned)
         } while(!videoSignal.nextLine(linePixels, vSyncOn));
         // Ask for a refresh of the frame
