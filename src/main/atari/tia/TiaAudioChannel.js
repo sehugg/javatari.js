@@ -133,6 +133,25 @@ jt.TiaAudioChannel = function() {
     var nextSampleForControl = nextSilence;
 
 
+    // Savestate  -------------------------------------------
+
+    this.saveState = function() {
+        return {
+            c: control, d: divider, dc: dividerCountdown, s: currentSample,
+            t2: tone2, t6: tone6, t6c: tone6Countdown, p9: poly9,
+            p4c: poly4Count, p5c: poly5Count, t31c: tone31Count
+        };
+    };
+
+    // Volume comes from the TIA registers
+    this.loadState = function(s) {
+        control = -1; this.setControl(s.c);
+        divider = s.d; dividerCountdown = s.dc; currentSample = s.s;
+        tone2 = s.t2; tone6 = s.t6; tone6Countdown = s.t6c; poly9 = s.p9;
+        poly4Count = s.p4c; poly5Count = s.p5c; tone31Count = s.t31c;
+    };
+
+
     var volume = 0;					// 0 - 1
     var control = 0;				// 0-f
     var divider = 1;				// Changes to dividers will only be reflected at the next countdown cycle

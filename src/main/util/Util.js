@@ -134,14 +134,30 @@ jt.Util = new function() {
         return ints;
     };
 
+    // When true, savestates keep arrays as plain copies instead of (compressed) base64 strings.
+    // Much faster, for hosts that save state every frame and never serialize it to text.
+    // Restoring accepts either form.
+    this.rawStates = false;
+
+    var copyArray = function(arr, length) {
+        return length < arr.length ? arr.slice(0, length) : arr.slice(0);
+    };
+
+    var restoreArray = function(arr, dest) {
+        if (dest && dest.length === arr.length) { jt.Util.arrayCopy(arr, 0, dest); return dest; }
+        return arr.slice(0);
+    };
+
     this.storeInt8BitArrayToStringBase64 = function(arr) {
         if (arr === null || arr === undefined) return arr;
+        if (this.rawStates) return copyArray(arr);
         if (arr.length === 0) return "";
         return btoa(this.int8BitArrayToByteString(arr));
     };
 
     this.restoreStringBase64ToInt8BitArray = function(str, dest) {
         if (str === null || str === undefined) return str;
+        if (typeof str !== "string") return restoreArray(str, dest);
         if (str == "null") return null; if (str == "undefined") return undefined;
         if (str == "") return [];
         return this.byteStringToInt8BitArray(atob(str), dest);
@@ -149,6 +165,7 @@ jt.Util = new function() {
 
     this.compressInt8BitArrayToStringBase64 = function(arr, length) {
         if (arr === null || arr === undefined) return arr;
+        if (this.rawStates) return copyArray(arr, length);
         if (arr.length === 0) return "";
         if (length < arr.length)
             return this.storeInt8BitArrayToStringBase64(JSZip.compressions.DEFLATE.compress(arr.slice(0, length)));
@@ -158,6 +175,7 @@ jt.Util = new function() {
 
     this.uncompressStringBase64ToInt8BitArray = function(str, dest, diffSize) {
         if (str === null || str === undefined) return str;
+        if (typeof str !== "string") return restoreArray(str, dest);
         if (str == "null") return null; if (str == "undefined") return undefined;
         if (str == "") return [];
         var res = JSZip.compressions.DEFLATE.uncompress(atob(str));
@@ -169,12 +187,14 @@ jt.Util = new function() {
 
     this.storeInt32BitArrayToStringBase64 = function(arr) {
         if (arr === null || arr === undefined) return arr;
+        if (this.rawStates) return copyArray(arr);
         if (arr.length === 0) return "";
         return btoa(this.int32BitArrayToByteString(arr));
     };
 
     this.restoreStringBase64ToInt32BitArray = function(str, dest) {
         if (str === null || str === undefined) return str;
+        if (typeof str !== "string") return restoreArray(str, dest);
         if (str == "null") return null; if (str == "undefined") return undefined;
         if (str == "") return [];
         return this.byteStringToInt32BitArray(atob(str), dest);

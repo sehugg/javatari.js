@@ -34,7 +34,10 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         audioSignal.powerOff();
     };
 
-    this.frame = function() {
+    // Runs one frame. If trap is given, it is asked before every CPU clock, and the frame is
+    // abandoned (returning true) as soon as it answers true. Saving the state inside the trap
+    // captures that exact point, mid-line included.
+    this.frame = function(trap) {
         do {
             // Begin line
             clock = 0;
@@ -47,20 +50,45 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
             }
 
             checkLateHMOVE();
-            // Send the first clock/3 pulse to the CPU and PIA, perceived by TIA at clock 0 before releasing halt, then release halt
-            bus.clockPulse();
-            cpu.setRDY(true);
-            for (var x = 0; x < 22; ++x) { clock += 3; bus.clockPulse(); }      // TIA 3..66     CPU 1..22
-            updateExtendedHBLANK();
-            for (var y = 0; y < 27; ++y) { clock += 3; bus.clockPulse(); }      // TIA 69..147   CPU 23..49
-            audioSignal.audioClockPulse();
-            endObjectsAltStatusMidLine();
-            for (var z = 0; z < 26; ++z) { clock += 3; bus.clockPulse(); }      // TIA 150..225  CPU 50..75
-            audioSignal.audioClockPulse();
+            if (trap) {
+                if (trapLine(trap)) return true;
+            } else {
+                // Send the first clock/3 pulse to the CPU and PIA, perceived by TIA at clock 0 before releasing halt, then release halt
+                bus.clockPulse();
+                cpu.setRDY(true);
+                for (var x = 0; x < 22; ++x) { clock += 3; bus.clockPulse(); }      // TIA 3..66     CPU 1..22
+                updateExtendedHBLANK();
+                for (var y = 0; y < 27; ++y) { clock += 3; bus.clockPulse(); }      // TIA 69..147   CPU 23..49
+                audioSignal.audioClockPulse();
+                endObjectsAltStatusMidLine();
+                for (var z = 0; z < 26; ++z) { clock += 3; bus.clockPulse(); }      // TIA 150..225  CPU 50..75
+                audioSignal.audioClockPulse();
+            }
             finishLine();
         } while(!videoSignal.nextLine(linePixels, vSyncOn));
 
         videoSignal.finishFrame();
+        return false;
+    };
+
+    // Same as the body of a line in frame(), asking trap before each CPU clock
+    var trapLine = function(trap) {
+        if (trap()) return true;
+        bus.clockPulse();
+        cpu.setRDY(true);
+        for (var x = 0; x < 22; ++x) { clock += 3; if (trap()) return true; bus.clockPulse(); }
+        updateExtendedHBLANK();
+        for (var y = 0; y < 27; ++y) { clock += 3; if (trap()) return true; bus.clockPulse(); }
+        audioSignal.audioClockPulse();
+        endObjectsAltStatusMidLine();
+        for (var z = 0; z < 26; ++z) { clock += 3; if (trap()) return true; bus.clockPulse(); }
+        audioSignal.audioClockPulse();
+        return false;
+    };
+
+    // Where the current line is, in CPU clocks (0..75)
+    this.getCPUClockInLine = function() {
+        return (clock / 3) | 0;
     };
 
     this.connectBus = function(aBus) {
@@ -1332,7 +1360,24 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
 
     this.saveState = function() {
         return {
+            clk: clock,
+            chc: changeClock,
+            rdc: renderClock,
             ccp: changeClockPrevLine,
+
+            in: [INPT0, INPT1, INPT2, INPT3, INPT4, INPT5],
+            cbl: controlsButtonsLatched,
+            j0p: controlsJOY0ButtonPressed,
+            j1p: controlsJOY1ButtonPressed,
+            pcg: paddleCapacitorsGrounded,
+            pd0: paddle0Position,
+            pd0c: paddle0CapacitorCharge,
+            pd1: paddle1Position,
+            pd1c: paddle1CapacitorCharge,
+
+            au0: audioSignal.getChannel0().saveState(),
+            au1: audioSignal.getChannel1().saveState(),
+
             lpx: jt.Util.storeInt32BitArrayToStringBase64(linePixels),
 
             vs: vSyncOn,
@@ -1438,7 +1483,25 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
     };
 
     this.loadState = function(s) {
+        if (s.clk !== undefined) {
+            clock = s.clk;
+            changeClock = s.chc;
+            renderClock = s.rdc;
+        }
         changeClockPrevLine = s.ccp;
+
+        if (s.in) {
+            INPT0 = s.in[0]; INPT1 = s.in[1]; INPT2 = s.in[2]; INPT3 = s.in[3]; INPT4 = s.in[4]; INPT5 = s.in[5];
+            controlsButtonsLatched = s.cbl;
+            controlsJOY0ButtonPressed = s.j0p;
+            controlsJOY1ButtonPressed = s.j1p;
+            paddleCapacitorsGrounded = s.pcg;
+            paddle0Position = s.pd0;
+            paddle0CapacitorCharge = s.pd0c;
+            paddle1Position = s.pd1;
+            paddle1CapacitorCharge = s.pd1c;
+        }
+
         jt.Util.restoreStringBase64ToInt32BitArray(s.lpx, linePixels);
 
         vSyncOn = s.vs;
@@ -1544,6 +1607,10 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         AUDF1 = s.AUDF1 | 0; audioSignal.getChannel1().setDivider((AUDF1 & 0x1f) + 1);
         AUDV0 = s.AUDV0 | 0; audioSignal.getChannel0().setVolume(AUDV0 & 0x0f);
         AUDV1 = s.AUDV1 | 0; audioSignal.getChannel1().setVolume(AUDV1 & 0x0f);
+        if (s.au0) {                                        // generator internals, after the registers above
+            audioSignal.getChannel0().loadState(s.au0);
+            audioSignal.getChannel1().loadState(s.au1);
+        }
 
         if (debug) debugSetColors();						// IF debug is on, ensure debug colors are used
     };
