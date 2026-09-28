@@ -2185,6 +2185,7 @@ jt.M6502 = function() {
             fetchOpcodeAndDecodeInstruction,
             function() {
                 illegalOpcode("KIL/HLT/JAM");
+                if (self.onHalt) self.onHalt(PC - 1);
             },
             function() {
                 T--;        // Causes the processor to be stuck in this instruction forever
@@ -2849,6 +2850,7 @@ jt.M6502 = function() {
     this.isStable = function() { return T === 0; };
     this.getPC = function() { return (PC - 1) & 0xffff; };
     this.getSP = function() { return SP; };
+    this.onHalt = null;     // called with the address of a KIL opcode when the CPU jams
 
 
     // Accessory methods
@@ -3477,6 +3479,15 @@ jt.TiaAudio = function() {
 
     this.powerOff = function() {
         disconnectAudio();
+    };
+
+    // Damper state, for savestates
+    this.getLastSample = function() {
+        return lastSample;
+    };
+
+    this.setLastSample = function(val) {
+        lastSample = val;
     };
 
     this.reset = function() {
@@ -5084,6 +5095,7 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
 
             au0: audioSignal.getChannel0().saveState(),
             au1: audioSignal.getChannel1().saveState(),
+            aul: audioSignal.getLastSample(),
 
             lpx: jt.Util.storeInt32BitArrayToStringBase64(linePixels),
 
@@ -5317,6 +5329,7 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         if (s.au0) {                                        // generator internals, after the registers above
             audioSignal.getChannel0().loadState(s.au0);
             audioSignal.getChannel1().loadState(s.au1);
+            audioSignal.setLastSample(s.aul || 0);
         }
 
         if (debug) debugSetColors();						// IF debug is on, ensure debug colors are used
