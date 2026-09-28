@@ -99,7 +99,7 @@ jt.Bus = function(pCpu, pTia, pPia, pRam) {
     var cartridge;
     var cartridgeNeedsBusMonitoring = false;
 
-    var data = (Math.random()* 256) | 0;            // Comes random at creation!
+    var data = (jt.Util.random()* 256) | 0;            // Comes random at creation!
 
 
     var CART_MASK = 0x1000;

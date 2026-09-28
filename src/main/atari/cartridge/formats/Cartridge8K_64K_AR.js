@@ -13,7 +13,7 @@ jt.Cartridge8K_64K_AR = function(rom, format) {
         bytes = jt.Util.arrayFill(new Array(4 * BANK_SIZE));
         loadBIOS();
         // Initialize Random seeds
-        for (var i = 0; i < 31; ++i) randomSeeds[i] = (Math.random() * 256) | 0;
+        for (var i = 0; i < 31; ++i) randomSeeds[i] = (jt.Util.random() * 256) | 0;
     }
 
     this.powerOn = function() {

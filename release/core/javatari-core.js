@@ -18,6 +18,11 @@ function toBytes(a) {
 jt.Util = new function() {
 "use strict";
 
+    // Every random draw in the core goes through here rather than Math.random,
+    // so a host that needs a reproducible machine (8bitworkshop's JavatariMachine
+    // seeds this) can supply its own generator. The default is unchanged.
+    this.random = Math.random;
+
     this.log = function(str) {
         console.log(">> jt: " + str);
     };
@@ -2892,7 +2897,7 @@ jt.Ram = function() {
     function init() {
         // RAM comes totally random at creation
         for (var i = bytes.length - 1; i >= 0; i--) {
-            bytes[i] = (Math.random() * 256) | 0;
+            bytes[i] = (jt.Util.random() * 256) | 0;
         }
     }
 
@@ -2911,15 +2916,15 @@ jt.Ram = function() {
     };
 
     this.powerFry = function() {
-        var variance = 1 - FRY_VARIANCE + 2 * Math.random() * FRY_VARIANCE;
+        var variance = 1 - FRY_VARIANCE + 2 * jt.Util.random() * FRY_VARIANCE;
         // Randomly put "0" in bits on the ram
         var fryZeroBits = variance * FRY_ZERO_BITS;
         for (var i = 0; i < fryZeroBits; i++)
-            bytes[(Math.random() * 128) | 0] &= ((Math.random() * 256) | 0);
+            bytes[(jt.Util.random() * 128) | 0] &= ((jt.Util.random() * 256) | 0);
         // Randomly put "1" in bits on the ram
         var fryOneBits = variance * FRY_ONE_BITS;
         for (i = 0; i < fryOneBits; i++)
-            bytes[(Math.random() * 128) | 0] |= (0x01 << ((Math.random() * 8) | 0));
+            bytes[(jt.Util.random() * 128) | 0] |= (0x01 << ((jt.Util.random() * 8) | 0));
     };
 
 
@@ -3144,7 +3149,7 @@ jt.Pia = function() {
         0x0b;  						    // Reset OFF; Select OFF; B/W OFF; Difficult A/B OFF (Amateur)
     var SWBCNT = 0; 					// 11111111  Port B DDR (hard wired as input)
     var INTIM =   						// 11111111  Timer output (read only)
-        (Math.random() * 256) | 0 ;     // Some random value. Games use this at startup to seed random number generation
+        (jt.Util.random() * 256) | 0 ;     // Some random value. Games use this at startup to seed random number generation
     var INSTAT = 0;     	            // 11......  Timer Status (read only, undocumented)
     var TIM1T  = 0;  	    			// 11111111  set 1 clock interval (838 nsec/interval)
     var TIM8T  = 0;  					// 11111111  set 8 clock interval (6.7 usec/interval)
@@ -5229,10 +5234,10 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         playfieldEnabled = s.pfe;
         playfieldPatternL = s.pfl | 0;
         playfieldPatternR = s.pfr | 0;
-        playfieldColor = s.pfc | 0;
-        playfieldLeftColor = s.pflc | 0;
-        playfieldRightColor = s.pfrc | 0;
-        playfieldBackground = s.pfb | 0;
+        playfieldColor = s.pfc >>> 0;
+        playfieldLeftColor = s.pflc >>> 0;
+        playfieldRightColor = s.pfrc >>> 0;
+        playfieldBackground = s.pfb >>> 0;
         playfieldReflected = s.pfrl;
         playfieldScoreMode = s.pfsc;
         playfieldPriority = s.pfp;
@@ -5240,7 +5245,7 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         ballEnabled = s.be;
         ballPixel = s.bx | 0;
         ballLineSpritePointer = s.blp | 0;
-        ballColor = s.bc | 0;
+        ballColor = s.bc >>> 0;
 
         player0Enabled = s.p0e;
         player0Pixel = s.p0x | 0;
@@ -5250,7 +5255,7 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         player0AltLength = s.p0al | 0;
         player0AltCopyOffset = s.p0ao | 0;
         jt.Util.arrayFill(player0AltControl, 0);
-        player0Color = s.p0c | 0;
+        player0Color = s.p0c >>> 0;
 
         player1Enabled = s.p1e;
         player1Pixel = s.p1x | 0;
@@ -5260,7 +5265,7 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         player1AltLength = s.p1al | 0;
         player1AltCopyOffset = s.p1ao | 0;
         jt.Util.arrayFill(player1AltControl, 0);
-        player1Color = s.p1c | 0;
+        player1Color = s.p1c >>> 0;
 
         missile0Enabled = s.m0e;
         missile0Pixel = s.m0x | 0;
@@ -5270,7 +5275,7 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         missile0AltLength = s.m0al | 0;
         missile0AltCopyOffset = s.m0ao | 0;
         jt.Util.arrayFill(missile0AltControl, 0);
-        missile0Color = s.m0c | 0;
+        missile0Color = s.m0c >>> 0;
 
         missile1Enabled = s.m1e;
         missile1Pixel = s.m1x | 0;
@@ -5280,7 +5285,7 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         missile1AltLength = s.m1al | 0;
         missile1AltCopyOffset = s.m1ao | 0;
         jt.Util.arrayFill(missile1AltControl, 0);
-        missile1Color = s.m1c | 0;
+        missile1Color = s.m1c >>> 0;
 
         hMoveHitBlank = s.hmh;
         hMoveHitClock = s.hmc | 0;
@@ -5633,7 +5638,7 @@ jt.Bus = function(pCpu, pTia, pPia, pRam) {
     var cartridge;
     var cartridgeNeedsBusMonitoring = false;
 
-    var data = (Math.random()* 256) | 0;            // Comes random at creation!
+    var data = (jt.Util.random()* 256) | 0;            // Comes random at creation!
 
 
     var CART_MASK = 0x1000;
@@ -7159,7 +7164,7 @@ jt.Cartridge8K_64K_AR = function(rom, format) {
         bytes = jt.Util.arrayFill(new Array(4 * BANK_SIZE));
         loadBIOS();
         // Initialize Random seeds
-        for (var i = 0; i < 31; ++i) randomSeeds[i] = (Math.random() * 256) | 0;
+        for (var i = 0; i < 31; ++i) randomSeeds[i] = (jt.Util.random() * 256) | 0;
     }
 
     this.powerOn = function() {

@@ -6,7 +6,7 @@ jt.Ram = function() {
     function init() {
         // RAM comes totally random at creation
         for (var i = bytes.length - 1; i >= 0; i--) {
-            bytes[i] = (Math.random() * 256) | 0;
+            bytes[i] = (jt.Util.random() * 256) | 0;
         }
     }
 
@@ -25,15 +25,15 @@ jt.Ram = function() {
     };
 
     this.powerFry = function() {
-        var variance = 1 - FRY_VARIANCE + 2 * Math.random() * FRY_VARIANCE;
+        var variance = 1 - FRY_VARIANCE + 2 * jt.Util.random() * FRY_VARIANCE;
         // Randomly put "0" in bits on the ram
         var fryZeroBits = variance * FRY_ZERO_BITS;
         for (var i = 0; i < fryZeroBits; i++)
-            bytes[(Math.random() * 128) | 0] &= ((Math.random() * 256) | 0);
+            bytes[(jt.Util.random() * 128) | 0] &= ((jt.Util.random() * 256) | 0);
         // Randomly put "1" in bits on the ram
         var fryOneBits = variance * FRY_ONE_BITS;
         for (i = 0; i < fryOneBits; i++)
-            bytes[(Math.random() * 128) | 0] |= (0x01 << ((Math.random() * 8) | 0));
+            bytes[(jt.Util.random() * 128) | 0] |= (0x01 << ((jt.Util.random() * 8) | 0));
     };
 
 

@@ -192,7 +192,7 @@ jt.Pia = function() {
         0x0b;  						    // Reset OFF; Select OFF; B/W OFF; Difficult A/B OFF (Amateur)
     var SWBCNT = 0; 					// 11111111  Port B DDR (hard wired as input)
     var INTIM =   						// 11111111  Timer output (read only)
-        (Math.random() * 256) | 0 ;     // Some random value. Games use this at startup to seed random number generation
+        (jt.Util.random() * 256) | 0 ;     // Some random value. Games use this at startup to seed random number generation
     var INSTAT = 0;     	            // 11......  Timer Status (read only, undocumented)
     var TIM1T  = 0;  	    			// 11111111  set 1 clock interval (838 nsec/interval)
     var TIM8T  = 0;  					// 11111111  set 8 clock interval (6.7 usec/interval)

@@ -3,6 +3,11 @@
 jt.Util = new function() {
 "use strict";
 
+    // Every random draw in the core goes through here rather than Math.random,
+    // so a host that needs a reproducible machine (8bitworkshop's JavatariMachine
+    // seeds this) can supply its own generator. The default is unchanged.
+    this.random = Math.random;
+
     this.log = function(str) {
         console.log(">> jt: " + str);
     };

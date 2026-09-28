@@ -1511,10 +1511,10 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         playfieldEnabled = s.pfe;
         playfieldPatternL = s.pfl | 0;
         playfieldPatternR = s.pfr | 0;
-        playfieldColor = s.pfc | 0;
-        playfieldLeftColor = s.pflc | 0;
-        playfieldRightColor = s.pfrc | 0;
-        playfieldBackground = s.pfb | 0;
+        playfieldColor = s.pfc >>> 0;
+        playfieldLeftColor = s.pflc >>> 0;
+        playfieldRightColor = s.pfrc >>> 0;
+        playfieldBackground = s.pfb >>> 0;
         playfieldReflected = s.pfrl;
         playfieldScoreMode = s.pfsc;
         playfieldPriority = s.pfp;
@@ -1522,7 +1522,7 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         ballEnabled = s.be;
         ballPixel = s.bx | 0;
         ballLineSpritePointer = s.blp | 0;
-        ballColor = s.bc | 0;
+        ballColor = s.bc >>> 0;
 
         player0Enabled = s.p0e;
         player0Pixel = s.p0x | 0;
@@ -1532,7 +1532,7 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         player0AltLength = s.p0al | 0;
         player0AltCopyOffset = s.p0ao | 0;
         jt.Util.arrayFill(player0AltControl, 0);
-        player0Color = s.p0c | 0;
+        player0Color = s.p0c >>> 0;
 
         player1Enabled = s.p1e;
         player1Pixel = s.p1x | 0;
@@ -1542,7 +1542,7 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         player1AltLength = s.p1al | 0;
         player1AltCopyOffset = s.p1ao | 0;
         jt.Util.arrayFill(player1AltControl, 0);
-        player1Color = s.p1c | 0;
+        player1Color = s.p1c >>> 0;
 
         missile0Enabled = s.m0e;
         missile0Pixel = s.m0x | 0;
@@ -1552,7 +1552,7 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         missile0AltLength = s.m0al | 0;
         missile0AltCopyOffset = s.m0ao | 0;
         jt.Util.arrayFill(missile0AltControl, 0);
-        missile0Color = s.m0c | 0;
+        missile0Color = s.m0c >>> 0;
 
         missile1Enabled = s.m1e;
         missile1Pixel = s.m1x | 0;
@@ -1562,7 +1562,7 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         missile1AltLength = s.m1al | 0;
         missile1AltCopyOffset = s.m1ao | 0;
         jt.Util.arrayFill(missile1AltControl, 0);
-        missile1Color = s.m1c | 0;
+        missile1Color = s.m1c >>> 0;
 
         hMoveHitBlank = s.hmh;
         hMoveHitClock = s.hmc | 0;
