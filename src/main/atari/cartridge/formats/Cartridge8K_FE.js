@@ -3,6 +3,7 @@
 // Implements the 8K "FE" Robotank/Decathlon format
 
 jt.Cartridge8K_FE = function(rom, format) {
+"use strict";
 
     function init(self) {
         self.rom = rom;
@@ -37,7 +38,7 @@ jt.Cartridge8K_FE = function(rom, format) {
         return {
             f: this.format.name,
             r: this.rom.saveState(),
-            b: btoa(jt.Util.uInt8ArrayToByteString(bytes)),
+            b: jt.Util.compressInt8BitArrayToStringBase64(bytes),
             bo: bankAddressOffset
         };
     };
@@ -45,7 +46,7 @@ jt.Cartridge8K_FE = function(rom, format) {
     this.loadState = function(state) {
         this.format = jt.CartridgeFormats[state.f];
         this.rom = jt.ROM.loadState(state.r);
-        bytes = jt.Util.byteStringToUInt8Array(atob(state.b));
+        bytes = jt.Util.uncompressStringBase64ToInt8BitArray(state.b, bytes);
         bankAddressOffset = state.bo;
     };
 
@@ -63,8 +64,8 @@ jt.Cartridge8K_FE = function(rom, format) {
 
 jt.Cartridge8K_FE.prototype = jt.Cartridge.base;
 
-jt.Cartridge8K_FE.createFromSaveState = function(state) {
-    var cart = new jt.Cartridge8K_FE();
+jt.Cartridge8K_FE.recreateFromSaveState = function(state, prevCart) {
+    var cart = prevCart || new jt.Cartridge8K_FE();
     cart.loadState(state);
     return cart;
 };

@@ -1,6 +1,7 @@
 // Copyright 2015 by Paulo Augusto Peccin. See license.txt distributed with this file.
 
 jt.Pia = function() {
+"use strict";
 
     this.powerOn = function() {
     };
@@ -111,10 +112,6 @@ jt.Pia = function() {
             case controls.DIFFICULTY1: if ((SWCHB & 0x80) == 0) SWCHB |= 0x80; else SWCHB &= 0x7f;		//  0 = Beginner, 1 = Advanced
                 bus.getTia().getVideoOutput().showOSD((SWCHB & 0x80) != 0 ? "P2 Expert" : "P2 Novice", true); return;
         }
-    };
-
-    this.controlValueChanged = function(control, position) {
-        // No positional controls here
     };
 
     this.controlsStateReport = function(report) {

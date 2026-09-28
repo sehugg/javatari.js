@@ -1,6 +1,7 @@
 // Copyright 2015 by Paulo Augusto Peccin. See license.txt distributed with this file.
 
 jt.Ram = function() {
+"use strict";
 
     function init() {
         // RAM comes totally random at creation
@@ -40,12 +41,12 @@ jt.Ram = function() {
 
     this.saveState = function() {
         return {
-            b: btoa(jt.Util.uInt8ArrayToByteString(bytes))
+            b: jt.Util.storeInt8BitArrayToStringBase64(bytes)
         };
     };
 
     this.loadState = function(state) {
-        bytes = jt.Util.byteStringToUInt8Array(atob(state.b));
+        bytes = jt.Util.restoreStringBase64ToInt8BitArray(state.b, bytes);
     };
 
 

@@ -3,6 +3,7 @@
 // Implements the 8K-256K "SB" Superbanking format
 
 jt.Cartridge8K_256K_SB = function(rom, format) {
+"use strict";
 
     function init(self) {
         self.rom = rom;
@@ -30,7 +31,7 @@ jt.Cartridge8K_256K_SB = function(rom, format) {
         return {
             f: this.format.name,
             r: this.rom.saveState(),
-            b: btoa(jt.Util.uInt8ArrayToByteString(bytes)),
+            b: jt.Util.compressInt8BitArrayToStringBase64(bytes),
             bo: bankAddressOffset,
             m: maxBank
         };
@@ -39,7 +40,7 @@ jt.Cartridge8K_256K_SB = function(rom, format) {
     this.loadState = function(state) {
         this.format = jt.CartridgeFormats[state.f];
         this.rom = jt.ROM.loadState(state.r);
-        bytes = jt.Util.byteStringToUInt8Array(atob(state.b));
+        bytes = jt.Util.uncompressStringBase64ToInt8BitArray(state.b, bytes);
         bankAddressOffset = state.bo;
         maxBank = state.m;
     };
@@ -59,8 +60,8 @@ jt.Cartridge8K_256K_SB = function(rom, format) {
 
 jt.Cartridge8K_256K_SB.prototype = jt.CartridgeBankedByBusMonitoring.base;
 
-jt.Cartridge8K_256K_SB.createFromSaveState = function(state) {
-    var cart = new jt.Cartridge8K_256K_SB();
+jt.Cartridge8K_256K_SB.recreateFromSaveState = function(state, prevCart) {
+    var cart = prevCart || new jt.Cartridge8K_256K_SB();
     cart.loadState(state);
     return cart;
 };

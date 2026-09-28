@@ -1,16 +1,29 @@
 // Copyright 2015 by Paulo Augusto Peccin. See license.txt distributed with this file.
 
-jt.Tia = function(pCpu, pPia) {
+// TODO NUSIZ during scan with HMOVE not correct. For now kill the scan in progress
+// TODO Starfield Effect not implemented
+// TODO AUTO Video Standard Detection too aggressive?
+// TODO Vsynch lines count affects vertical position!
+
+jt.Tia = function(pCpu, pPia, audioSocket) {
+    "use strict";
+
     var self = this;
 
+    function init() {
+        generateObjectsLineSprites();
+        generateObjectsCopiesOffsets();
+    }
+
     this.powerOn = function() {
-        jt.Util.arrayFill(linePixels, HBLANK_COLOR);
+        jt.Util.arrayFill(linePixels, VBLANK_COLOR);
         jt.Util.arrayFill(debugPixels, 0);
         audioSignal.getChannel0().setVolume(0);
         audioSignal.getChannel1().setVolume(0);
         initLatchesAtPowerOn();
-        observableChange(); observableChangeExtended = true;
-        audioSignal.signalOn();
+        hMoveLateHit = false;
+        changeClock = changeClockPrevLine = -1;
+        audioSignal.powerOn();
         powerOn = true;
     };
 
@@ -18,67 +31,35 @@ jt.Tia = function(pCpu, pPia) {
         powerOn = false;
         // Let monitors know that the signals are off
         videoSignal.signalOff();
-        audioSignal.signalOff();
+        audioSignal.powerOff();
     };
 
-    this.disableDebug = function() {
-      debugCondition = null;
-    }
-
-    this.setDebugCondition = function(debugCond) {
-      debugCondition = debugCond;
-    }
-
     this.frame = function() {
-        if (debugPause)
-            if (debugPauseMoreFrames-- <= 0) return;
-        var debugCond = debugCondition;
-        var breakClock = -1;
-        var debugScanOverflow = Javatari.DEBUG_SCANLINE_OVERFLOW;
         do {
+            // Begin line
             clock = 0;
-            if (debugCond && breakClock < 0 && debugCond()) { breakClock = clock; }
-            // Send the first clock/3 pulse to the CPU and PIA, perceived by TIA at clock 0
+            changeClock = -1;
+            renderClock = HBLANK_DURATION;
+
+            if (debug) {
+                if (debugLevel >= 4) jt.Util.arrayFill(linePixels, 0xff000000);     // clear line
+                else if (debugLevel >= 2 && debugLevel < 4) changeClock = 0;        // force entire line render
+            }
+
+            checkLateHMOVE();
+            // Send the first clock/3 pulse to the CPU and PIA, perceived by TIA at clock 0 before releasing halt, then release halt
             bus.clockPulse();
-            // Log when we are not in WSYNC (!RDY) at the start of a line
-            if (debugScanOverflow && cpu.isRDY()) { console.log("Scan overflow @ " + cpu.saveState().PC.toString(16)); }
-            // Releases the CPU at the beginning of the line in case a WSYNC has halted it
             cpu.setRDY(true);
-            // HBLANK period
-            for (clock = 3; clock < HBLANK_DURATION; clock += 3) {		// 3 .. 66
-                if (!repeatLastLine) checkRepeatMode();
-                // Send clock/3 pulse to the CPU and PIA each 3rd TIA cycle
-                if (debugCond && breakClock < 0 && debugCond()) { breakClock = clock; }
-                bus.clockPulse();
-            }
-            // 67
-            // First Audio Sample. 2 samples per scan line ~ 31440 KHz
+            for (var x = 0; x < 22; ++x) { clock += 3; bus.clockPulse(); }      // TIA 3..66     CPU 1..22
+            updateExtendedHBLANK();
+            for (var y = 0; y < 27; ++y) { clock += 3; bus.clockPulse(); }      // TIA 69..147   CPU 23..49
             audioSignal.audioClockPulse();
-            // Display period
-            var subClock3 = 2;	    // To control the clock/3 cycles. First at clock 69
-            for (clock = 68; clock < LINE_WIDTH; clock++) {			// 68 .. 227
-                if (!repeatLastLine) checkRepeatMode();
-                // Clock delay decodes
-                if (vBlankDecodeActive) vBlankClockDecode();
-                // Send clock/3 pulse to the CPU and PIA each 3rd TIA cycle
-                if (--subClock3 === 0) {
-                    if (debugCond && breakClock < 0 && debugCond()) { breakClock = clock; }
-                    bus.clockPulse();
-                    subClock3 = 3;
-                }
-                objectsClockCounters();
-                if (!repeatLastLine && (clock >= 76 || !hMoveHitBlank))
-                    setPixelValue();
-                // else linePixels[clock] |= 0x88800080;	// Add a pink dye to show pixels repeated
-            }
-            // End of scan line
-            // Second Audio Sample. 2 samples per scan line ~ 31440 KHz
+            endObjectsAltStatusMidLine();
+            for (var z = 0; z < 26; ++z) { clock += 3; bus.clockPulse(); }      // TIA 150..225  CPU 50..75
             audioSignal.audioClockPulse();
             finishLine();
-            // Send the finished line to the output and check if monitor vSynched (true returned)
         } while(!videoSignal.nextLine(linePixels, vSyncOn));
-        // Ask for a refresh of the frame
-        audioSignal.finishFrame();
+
         videoSignal.finishFrame();
     };
 
@@ -95,518 +76,850 @@ jt.Tia = function(pCpu, pPia) {
     };
 
     this.setVideoStandard = function(standard) {
-        videoSignal.standard = standard;
-        palette = standard === jt.VideoStandard.NTSC ? jt.VideoStandard.NTSC.palette : jt.VideoStandard.PAL.palette;
+        videoSignal.setVideoStandard(standard);
+        palette = jt.TiaPalettes[standard.name];
     };
 
     this.debug = function(level) {
         debugLevel = level > 4 ? 0 : level;
         debug = debugLevel !== 0;
         videoSignal.showOSD(debug ? "Debug Level " + debugLevel : "Debug OFF", true);
-        cpu.debug = debug;
+        //cpu.debug = debug;
         pia.debug = debug;
         if (debug) debugSetColors();
         else debugRestoreColors();
     };
 
+    this.getDebugNoCollisions = function() {
+        return debugNoCollisions;
+    };
+
     this.read = function(address) {
-        var reg = address & READ_ADDRESS_MASK;
-        if (reg === 0x00) return CXM0P;
-        if (reg === 0x01) return CXM1P;
-        if (reg === 0x02) return CXP0FB;
-        if (reg === 0x03) return CXP1FB;
-        if (reg === 0x04) return CXM0FB;
-        if (reg === 0x05) return CXM1FB;
-        if (reg === 0x06) return CXBLPF;
-        if (reg === 0x07) return CXPPMM;
-        if (reg === 0x08) return INPT0;
-        if (reg === 0x09) return INPT1;
-        if (reg === 0x0A) return INPT2;
-        if (reg === 0x0B) return INPT3;
-        if (reg === 0x0C) return INPT4;
-        if (reg === 0x0D) return INPT5;
-        return 0;
+        switch(address & READ_ADDRESS_MASK) {
+            // P0P1, P0M0, P0M1, P0PF,     P0BL, P1M0, P1M1, P1PF,     P1BL, M0M1, M0PF, M0BL,     M1PF, M1BL, PFBL, XXXX
+            //  15    14    13    12        11    10    9     8         7     6     5     4         3     2     1     0
+
+            case 0x00: updateToClock(); return ((collisions & 0x0400) >> 3) | ((collisions & 0x4000) >> 8);          // CXM0P
+            case 0x01: updateToClock(); return ((collisions & 0x2000) >> 6) | ((collisions & 0x0200) >> 3);          // CXM1P
+            case 0x02: updateToClock(); return ((collisions & 0x1000) >> 5) | ((collisions & 0x0800) >> 5);          // CXP0FB
+            case 0x03: updateToClock(); return ((collisions & 0x0100) >> 1) | ((collisions & 0x0080) >> 1);          // CXP1FB
+            case 0x04: updateToClock(); return ((collisions & 0x0020) << 2) | ((collisions & 0x0010) << 2);          // CXM0FB
+            case 0x05: updateToClock(); return ((collisions & 0x0008) << 4) | ((collisions & 0x0004) << 4);          // CXM1FB
+            case 0x06: updateToClock(); return ((collisions & 0x0002) << 6);                                         // CXBLPF
+            case 0x07: updateToClock(); return ((collisions & 0x8000) >> 8) | (collisions & 0x0040);                 // CXPPMM
+
+            case 0x08: return INPT0;
+            case 0x09: return INPT1;
+            case 0x0A: return INPT2;
+            case 0x0B: return INPT3;
+            case 0x0C: return INPT4;
+            case 0x0D: return INPT5;
+            default:   return 0;
+        }
     };
 
     this.write = function(address, i) {
-        var reg = address & WRITE_ADDRESS_MASK;
-        if (reg === 0x1B) {  playerDelaySpriteChange(0, i); return; }
-        if (reg === 0x1C) { playerDelaySpriteChange(1, i); return; }
-   		if (reg === 0x02) { cpu.setRDY(false); if (debug) debugPixel(DEBUG_WSYNC_COLOR); return; } 	// <STROBE> Halts the CPU until the next HBLANK
-        if (reg === 0x2A) { hitHMOVE(); return; }
-        if (reg === 0x0D) { if (PF0 != i || playfieldDelayedChangePart === 0) playfieldDelaySpriteChange(0, i); return; }
-        if (reg === 0x0E) { if (PF1 != i || playfieldDelayedChangePart === 1) playfieldDelaySpriteChange(1, i); return; }
-        if (reg === 0x0F) { if (PF2 != i || playfieldDelayedChangePart === 2) playfieldDelaySpriteChange(2, i); return; }
-        if (reg === 0x06) { observableChange(); if (!debug) player0Color = missile0Color = palette[i]; return; }
-        if (reg === 0x07) { observableChange(); if (!debug) player1Color = missile1Color = palette[i]; return; }
-        if (reg === 0x08) { observableChange(); if (!debug) playfieldColor = ballColor = palette[i]; return; }
-        if (reg === 0x09) { observableChange(); if (!debug) playfieldBackground = palette[i]; return; }
-        if (reg === 0x1D) { observableChange(); missile0Enabled = (i & 0x02) !== 0; return; }
-        if (reg === 0x1E) { observableChange(); missile1Enabled = (i & 0x02) !== 0; return; }
-        if (reg === 0x14) { hitRESBL(); return; }
-        if (reg === 0x10) { hitRESP0(); return; }
-        if (reg === 0x11) { hitRESP1(); return; }
-        if (reg === 0x12) { hitRESM0(); return; }
-        if (reg === 0x13) { hitRESM1(); return; }
-        if (reg === 0x20) { HMP0 = i > 127 ? -16 + (i >>> 4) : i >>> 4; return; }
-        if (reg === 0x21) { HMP1 = i > 127 ? -16 + (i >>> 4) : i >>> 4; return; }
-        if (reg === 0x22) { HMM0 = i > 127 ? -16 + (i >>> 4) : i >>> 4; return; }
-        if (reg === 0x23) { HMM1 = i > 127 ? -16 + (i >>> 4) : i >>> 4; return; }
-        if (reg === 0x24) { HMBL = i > 127 ? -16 + (i >>> 4) : i >>> 4; return; }
-        if (reg === 0x2B) { HMP0 = HMP1 = HMM0 = HMM1 = HMBL = 0; return; }
-        if (reg === 0x1F) { ballSetGraphic(i); return; }
-        if (reg === 0x04) { player0SetShape(i); return; }
-        if (reg === 0x05) { player1SetShape(i); return; }
-        if (reg === 0x0A) { playfieldAndBallSetShape(i); return; }
-        if (reg === 0x0B) { observableChange(); player0Reflected = (i & 0x08) !== 0; return; }
-        if (reg === 0x0C) { observableChange(); player1Reflected = (i & 0x08) !== 0; return; }
-        if (reg === 0x25) { observableChange(); player0VerticalDelay = (i & 0x01) !== 0; return; }
-        if (reg === 0x26) { observableChange(); player1VerticalDelay = (i & 0x01) !== 0; return; }
-        if (reg === 0x27) { observableChange(); ballVerticalDelay = (i & 0x01) !== 0; return; }
-        if (reg === 0x15) { AUDC0 = i; audioSignal.getChannel0().setControl(i & 0x0f); return; }
-        if (reg === 0x16) { AUDC1 = i; audioSignal.getChannel1().setControl(i & 0x0f); return; }
-        if (reg === 0x17) { AUDF0 = i; audioSignal.getChannel0().setDivider((i & 0x1f) + 1); return; }     // Bits 0-4, Divider from 1 to 32
-        if (reg === 0x18) { AUDF1 = i; audioSignal.getChannel1().setDivider((i & 0x1f) + 1); return; }     // Bits 0-4, Divider from 1 to 32
-        if (reg === 0x19) { AUDV0 = i; audioSignal.getChannel0().setVolume(i & 0x0f); return; }            // Bits 0-3, Volume from 0 to 15
-        if (reg === 0x1A) { AUDV1 = i; audioSignal.getChannel1().setVolume(i & 0x0f); return; }            // Bits 0-3, Volume from 0 to 15
-        if (reg === 0x28) { missile0SetResetToPlayer(i); return; }
-        if (reg === 0x29) { missile1SetResetToPlayer(i); return; }
-        if (reg === 0x01) { vBlankSet(i); return; }
-        if (reg === 0x00) { observableChange(); vSyncOn = (i & 0x02) !== 0; if (debug) debugPixel(VSYNC_COLOR); return; }
-        if (reg === 0x2C) { observableChange(); CXM0P = CXM1P = CXP0FB = CXP1FB = CXM0FB = CXM1FB = CXBLPF = CXPPMM = 0; return; }
-        // if (reg === 0x03) { clock = 0; return; }  //  RSYNC
-        return 0;
+        switch (address & WRITE_ADDRESS_MASK) {
+            // VSync, VBlank and HSync
+            case 0x00: vSyncSet(i); return;
+            case 0x01: vBlankSet(i); return;
+            case 0x02: cpu.setRDY(false); if (debug) debugPixel(DEBUG_WSYNC_COLOR); return; 	       // <STROBE> Halts the CPU until the next HBLANK
+
+            // Playfield
+            case 0x09: if (COLUBK !== i && !debug) { changeAtClock(); COLUBK = i; playfieldBackground = palette[i]; } return;
+            case 0x0D: if (PF0 !== (i & 0xf0)) { changePlayfieldAtClock(); PF0 = i & 0xf0; playfieldUpdateSprite(); } return;
+            case 0x0E: if (PF1 !== i) { changePlayfieldAtClock(); PF1 = i; playfieldUpdateSprite(); } return;
+            case 0x0F: if (PF2 !== i) { changePlayfieldAtClock(); PF2 = i; playfieldUpdateSprite(); } return;
+
+            // Playfield & Ball
+            case 0x08: if (COLUPF !== i && !debug) { if ((playfieldEnabled && !playfieldScoreMode) || ballEnabled) changeAtClock(); COLUPF = i; ballColor = palette[i]; if (!playfieldScoreMode) playfieldColor = playfieldLeftColor = playfieldRightColor = ballColor } return;
+            case 0x0A: if (CTRLPF !== i) { playfieldSetShape(i); } return;
+
+            // Ball
+            case 0x14: hitRESBL(); return;
+            case 0x1F: if (ENABLd !== (i & 0x02)) { ENABLd = i & 0x02; if (!VDELBL) { changeAtClock(); ballSetEnabled(ENABLd); } } return;
+            case 0x27: if (VDELBL !== (i  & 1)) { VDELBL = i & 1; if (ENABL !== ENABLd) { changeAtClock(); ballSetEnabled(VDELBL ? ENABL : ENABLd); } } return;
+
+            // Player0
+            case 0x04: player0SetShape(i); return;
+            case 0x06: if (COLUP0 !== i && !debug) { COLUP0 = i; if (player0Enabled || missile0Enabled || (playfieldEnabled && playfieldScoreMode)) changeAtClock(); player0Color = missile0Color = palette[i]; if (playfieldScoreMode) playfieldLeftColor = player0Color; } return;
+            case 0x0B: if (REFP0 !== ((i >> 3) & 1)) { REFP0 = (i >> 3) & 1; player0UpdateSprite(0); } return;
+            case 0x10: hitRESP0(); return;
+            case 0x1B: player0SetSprite(i); return;
+            case 0x25: if (VDELP0 !== (i  & 1)) { VDELP0 = i & 1; if (GRP0 !== GRP0d) player0UpdateSprite(0); } return;
+
+            // Player1
+            case 0x05: player1SetShape(i); return;
+            case 0x07: if (COLUP1 !== i && !debug) { COLUP1 = i; if (player1Enabled || missile1Enabled || (playfieldEnabled && playfieldScoreMode)) changeAtClock(); player1Color = missile1Color = palette[i]; if (playfieldScoreMode) playfieldRightColor = player1Color; } return;
+            case 0x0C: if (REFP1 !== ((i >> 3) & 1)) { REFP1 = (i >> 3) & 1; player1UpdateSprite(0); } return;
+            case 0x11: hitRESP1(); return;
+            case 0x1C: player1SetSprite(i); return;
+            case 0x26: if (VDELP1 !== (i  & 1)) { VDELP1 = i & 1; if (GRP1 !== GRP1d) player1UpdateSprite(0); } return;
+
+            // Missile0
+            case 0x12: hitRESM0(); return;
+            case 0x1D: if (ENAM0 !== (i & 0x02)) { ENAM0 = i & 0x02; if (!RESMP0) { changeAtClock(); missile0SetEnabled(ENAM0); } } return;
+            case 0x28: missile0SetResetToPlayer(i); return;
+
+            // Missile1
+            case 0x13: hitRESM1(); return;
+            case 0x1E: if (ENAM1 !== (i & 0x02)) { ENAM1 = i & 0x02; if (!RESMP1) { changeAtClock(); missile1SetEnabled(ENAM1); } } return;
+            case 0x29: missile1SetResetToPlayer(i); return;
+
+            // HMOVE
+            case 0x20: HMP0 = (i > 127 ? -16 : 0) + (i >> 4); return;
+            case 0x21: HMP1 = (i > 127 ? -16 : 0) + (i >> 4); return;
+            case 0x22: HMM0 = (i > 127 ? -16 : 0) + (i >> 4); return;
+            case 0x23: HMM1 = (i > 127 ? -16 : 0) + (i >> 4); return;
+            case 0x24: HMBL = (i > 127 ? -16 : 0) + (i >> 4); return;
+            case 0x2A: hitHMOVE(); return;
+            case 0x2B: HMP0 = HMP1 = HMM0 = HMM1 = HMBL = 0; return;
+
+            // Collisions
+            case 0x2C: changeAtClock(); collisions = 0; return;
+
+            // RSYNC
+            //case 0x03: clock = 0; return;
+
+            // Audio
+            case 0x15: if (AUDC0 !== i) { AUDC0 = i; audioSignal.getChannel0().setControl(i & 0x0f); } return;
+            case 0x16: if (AUDC1 !== i) { AUDC1 = i; audioSignal.getChannel1().setControl(i & 0x0f); } return;
+            case 0x17: if (AUDF0 !== i) { AUDF0 = i; audioSignal.getChannel0().setDivider((i & 0x1f) + 1); } return;     // Bits 0-4, Divider from 1 to 32
+            case 0x18: if (AUDF1 !== i) { AUDF1 = i; audioSignal.getChannel1().setDivider((i & 0x1f) + 1); } return;
+            case 0x19: if (AUDV0 !== i) { AUDV0 = i; audioSignal.getChannel0().setVolume(i & 0x0f); } return;            // Bits 0-3, Volume from 0 to 15
+            case 0x1A: if (AUDV1 !== i) { AUDV1 = i; audioSignal.getChannel1().setVolume(i & 0x0f); } return;
+        }
     };
 
-    var setPixelValue = function() {
-        // No need to calculate all possibilities in vSync/vBlank. TODO No collisions will be detected
-        if (vSyncOn) {
-            linePixels[clock] = vSyncColor;
-            return;
-        }
+    // caution: endClock can exceed but never wrap end of line!
+    function renderLineTo(endClock) {
+        var p, finalClock = (endClock > LINE_WIDTH ? LINE_WIDTH : endClock);
+
         if (vBlankOn) {
-            linePixels[clock] = vBlankColor;
+            // No collisions will be detected during VBLANK
+            for (var bPixel = renderClock; bPixel < finalClock; ++bPixel) linePixels[bPixel] = vBlankColor;
             return;
         }
-        // Flags for Collision latches
-        var P0 = false, P1 = false, M0 = false, M1 = false, FL = false, BL = false;
-        // Updates the current PlayFiled pixel to draw only each 4 pixels, or at the first calculated pixel after stopped using cached line
-        if ((clock & 0x03) === 0 || clock === lastObservableChangeClock)		// clock & 0x03 is the same as clock % 4
-            playfieldUpdateCurrentPixel();
-        // Pixel color
-        var color;
 
-        // Get the value for the PlayField and Ball first only if PlayField and Ball have higher priority
-        if (playfieldPriority) {
-            // Get the value for the Ball
-            if (ballScanCounter >= 0 && ballScanCounter <= 7) {
-                playersPerformDelayedSpriteChanges();		// May trigger Ball delayed enablement
+        var newCollisions = collisions;
+        for (var pixel = renderClock - HBLANK_DURATION, finalPixel = finalClock - HBLANK_DURATION; pixel < finalPixel; ++pixel) {
+
+            // Pixel color and Flags for Collision latches
+            var color = 0, collis = collisionsPossible;
+
+            if (playfieldPriority) {
+                // Playfield
+                if (playfieldEnabled) {
+                    if ((pixel < 80 ? (playfieldPatternL >> (pixel >> 2)) : (playfieldPatternR >> ((pixel - 80) >> 2))) & 1) {
+                        color = playfieldColor;     // ignore score mode
+                    } else collis &= PFC;
+                }
+                // Ball
                 if (ballEnabled) {
-                    BL = true;
-                    color = ballColor;
+                    p = pixel - ballPixel; if (p < 0) p += 160;
+                    if ((missileBallLineSprites[ballLineSpritePointer + (p >> 3)] >> (p & 0x07)) & 1) {
+                        if (!color) color = ballColor;
+                    } else collis &= BLC;
                 }
             }
-            if (playfieldCurrentPixel) {
-                FL = true;
-                if (!color) color = playfieldColor;	// No Score Mode in priority mode
-            }
-        }
-        // Get the value for Player0
-        if (player0ScanCounter >= 0 && player0ScanCounter <= 31) {
-            playersPerformDelayedSpriteChanges();
-            var sprite = player0VerticalDelay ? player0ActiveSprite : player0DelayedSprite;
-            if (sprite != 0)
-                if (((sprite >> (player0Reflected ? (7 - (player0ScanCounter >>> 2)) : (player0ScanCounter >>> 2))) & 0x01) !== 0) {
-                    P0 = true;
+
+            // Player0
+            if (player0Enabled) {
+                p = pixel - player0Pixel; if (p < 0) p += 160;
+                if ((playerLineSprites[player0LineSpritePointer + (p >> 3)] >> (p & 0x07)) & 1) {
                     if (!color) color = player0Color;
-                }
-        }
-        if (missile0ScanCounter >= 0 && missile0Enabled && missile0ScanCounter <= 7 && !missile0ResetToPlayer) {
-            M0 = true;
-            if (!color > 0) color = missile0Color;
-        }
-        // Get the value for Player1
-        if (player1ScanCounter >= 0 && player1ScanCounter <= 31) {
-            playersPerformDelayedSpriteChanges();
-            sprite = player1VerticalDelay ? player1ActiveSprite : player1DelayedSprite;
-            if (sprite !== 0)
-                if (((sprite >> (player1Reflected ? (7 - (player1ScanCounter >>> 2)) : (player1ScanCounter >>> 2))) & 0x01) !== 0) {
-                    P1 = true;
+                } else collis &= P0C;
+            }
+
+            // Missile0
+            if (missile0Enabled) {
+                p = pixel - missile0Pixel; if (p < 0) p += 160;
+                if ((missileBallLineSprites[missile0LineSpritePointer + (p >> 3)] >> (p & 0x07)) & 1) {
+                    if (!color) color = missile0Color;
+                } else collis &= M0C;
+            }
+
+            // Player1
+            if (player1Enabled) {
+                p = pixel - player1Pixel; if (p < 0) p += 160;
+                if ((playerLineSprites[player1LineSpritePointer + (p >> 3)] >> (p & 0x07)) & 1) {
                     if (!color) color = player1Color;
+                } else collis &= P1C;
+            }
+
+            // Missile1
+            if (missile1Enabled) {
+                p = pixel - missile1Pixel; if (p < 0) p += 160;
+                if ((missileBallLineSprites[missile1LineSpritePointer + (p >> 3)] >> (p & 0x07)) & 1) {
+                    if (!color) color = missile1Color;
+                } else collis &= M1C;
+            }
+
+            if (!playfieldPriority) {
+                // Playfield
+                if (playfieldEnabled) {
+                    if (pixel < 80) {
+                        if ((playfieldPatternL >> (pixel >> 2)) & 1) {
+                            if (!color) color = playfieldLeftColor;
+                        } else collis &= PFC;
+                    } else {
+                        if ((playfieldPatternR >> ((pixel - 80) >> 2)) & 1) {
+                            if (!color) color = playfieldRightColor;
+                        } else collis &= PFC;
+                    }
                 }
-        }
-        if (missile1ScanCounter >= 0 && missile1Enabled &&  missile1ScanCounter <= 7 && !missile1ResetToPlayer) {
-            M1 = true;
-            if (!color) color = missile1Color;
-        }
-        if (!playfieldPriority) {
-            // Get the value for the Ball (low priority)
-            if (ballScanCounter >= 0 && ballScanCounter <= 7) {
-                playersPerformDelayedSpriteChanges();		// May trigger Ball delayed enablement
+                // Ball
                 if (ballEnabled) {
-                    BL = true;
-                    if (!color) color = ballColor;
+                    p = pixel - ballPixel; if (p < 0) p += 160;
+                    if ((missileBallLineSprites[ballLineSpritePointer + (p >> 3)] >> (p & 0x07)) & 1) {
+                        if (!color) color = ballColor;
+                    } else collis &= BLC;
                 }
             }
-            // Get the value for the the PlayField (low priority)
-            if (playfieldCurrentPixel) {
-                FL = true;
-                if (!color) color = !playfieldScoreMode ? playfieldColor : (clock < 148 ? player0Color : player1Color);
-            }
+
+            // Set pixel color, or background
+            linePixels[pixel + HBLANK_DURATION] = color || playfieldBackground;
+
+            // Update collision latches
+            newCollisions |= collis;
         }
-        // If nothing more is showing, get the PlayField background value (low priority)
-        if (!color) color = playfieldBackground;
-        // Set the correct pixel color
-        linePixels[clock] = color;
-        // Finish collision latches
-        if (debugNoCollisions) return;
-        if (P0 && FL)
-            CXP0FB |= 0x80;
-        if (P1) {
-            if (FL) CXP1FB |= 0x80;
-            if (P0) CXPPMM |= 0x80;
+        if (!debugNoCollisions) collisions = newCollisions;
+    }
+
+    function changeAt(atClock) {
+        if (vBlankOn) return;
+
+        if (atClock > renderClock) {
+            if (changeClock >= 0 || changeClockPrevLine >= 0) renderLineTo(atClock);
+            renderClock = atClock;
         }
-        if (BL) {
-            if (FL) CXBLPF |= 0x80;
-            if (P0) CXP0FB |= 0x40;
-            if (P1) CXP1FB |= 0x40;
+        changeClock = renderClock;
+    }
+
+    function changeAtClock() {
+        changeAt(clock);
+    }
+
+    function changeAtClockPlus(add) {
+        changeAt(clock + add);                      // Renders "add" pixels forward, for changes that are only effective after "add" clocks
+    }
+
+    function changePlayfieldAtClock() {
+        if (debug) debugPixel(DEBUG_PF_GR_COLOR);
+        // PF changes are only effective after 2 clocks. Additionally, once a playfield pixel (4 clocks wide) has started,
+        // it will remain the same until the end. So we will perceive this change accordingly
+        if (clock < renderClock - 1) return changeAtClock();         // Does not matter
+        var ip = clock & 0x03;
+        if (ip < 3) changeAtClockPlus(4 - ip);      // Perceive change only at the next PF pixel
+        else changeAtClockPlus(5);                  // Perceive change only 2 PF pixels later
+    }
+
+    function changeVBlankAtClockPlus1() {
+        var atClock = clock + 1;
+        if (atClock > renderClock) {
+            if (changeClock >= 0 || changeClockPrevLine >= 0) renderLineTo(atClock);
+            renderClock = atClock;
         }
-        if (M0) {
-            if (P1) CXM0P  |= 0x80;
-            if (P0) CXM0P  |= 0x40;
-            if (FL) CXM0FB |= 0x80;
-            if (BL) CXM0FB |= 0x40;
+        changeClock = renderClock;
+    }
+
+    function updateToClock() {    // does not trigger change
+        if (vBlankOn) return;
+
+        if (clock > renderClock) {
+            if (changeClock >= 0 || changeClockPrevLine >= 0) renderLineTo(clock);
+            renderClock = clock;
         }
-        if (M1) {
-            if (P0) CXM1P  |= 0x80;
-            if (P1) CXM1P  |= 0x40;
-            if (FL) CXM1FB |= 0x80;
-            if (BL) CXM1FB |= 0x40;
-            if (M0) CXPPMM |= 0x40;
-        }
-    };
+    }
 
     var finishLine = function() {
+        // Render remaining part of current line if needed
+        if (changeClock >= 0) {
+            renderLineTo(LINE_WIDTH);
+            changeClockPrevLine = changeClock;
+        } else {
+            if (changeClockPrevLine >= 0) {
+                renderLineTo(changeClockPrevLine);
+                changeClockPrevLine = -1;
+            }
+        }
+        // Disabled repeat mode
+        //renderLineTo(LINE_WIDTH);
+        //changeClockPrevLine = 0;
+
+        endObjectsAltStatusEndOfLine();
+
         // Handle Paddles capacitor charging, only if paddles are connected (position >= 0)
         if (paddle0Position >= 0 && !paddleCapacitorsGrounded) {
             if (INPT0 < 0x80 && ++paddle0CapacitorCharge >= paddle0Position) INPT0 |= 0x80;
             if (INPT1 < 0x80 && ++paddle1CapacitorCharge >= paddle1Position) INPT1 |= 0x80;
         }
-        // Fills the extended HBLANK portion of the current line if needed
-        if (hMoveHitBlank) {
-            linePixels[HBLANK_DURATION] = linePixels[HBLANK_DURATION + 1] =
-            linePixels[HBLANK_DURATION + 2] = linePixels[HBLANK_DURATION + 3] =
-            linePixels[HBLANK_DURATION + 4] = linePixels[HBLANK_DURATION + 5] =
-            linePixels[HBLANK_DURATION + 6] = linePixels[HBLANK_DURATION + 7] = hBlankColor;    // This is faster than a fill
-            hMoveHitBlank = false;
-        }
-        // Perform late HMOVE hit if needed
-        if (hMoveLateHit) {
-            hMoveLateHit = false;
-            hMoveHitBlank = hMoveLateHitBlank;
-            performHMOVE();
-        }
-        // Extend pixel computation to the entire next line if needed
-        if (observableChangeExtended) {
-            lastObservableChangeClock = 227;
-            observableChangeExtended = false;
-        }
+
         // Inject debugging information in the line if needed
-        if (debugLevel >= 2) processDebugPixelsInLine();
+        if (debugLevel >= 1) processDebugPixelsInLine();
     };
 
-    var playfieldUpdateCurrentPixel = function() {
-        playfieldPerformDelayedSpriteChange(false);
-        if (playfieldPatternInvalid) {
-            playfieldPatternInvalid = false;
-            // Shortcut if the Playfield is all clear
-            if (PF0 === 0 && PF1 === 0 && PF2 === 0) {
-                jt.Util.arrayFill(playfieldPattern, false);
-                playfieldCurrentPixel = false;
-                return;
+    function augmentCollisionsPossible() {
+        collisionsPossible = 0xfffe;
+        if (!player0Enabled) collisionsPossible &= P0C;
+        if (!player1Enabled) collisionsPossible &= P1C;
+        if (!missile0Enabled) collisionsPossible &= M0C;
+        if (!missile1Enabled) collisionsPossible &= M1C;
+        if (!playfieldEnabled) collisionsPossible &= PFC;
+        if (!ballEnabled) collisionsPossible &= BLC;
+    }
+
+    var playfieldSetShape = function(i) {
+        if (CTRLPF === i) return;
+
+        var v = i & 0x07;
+        if (v !== (CTRLPF & 0x07)) {
+            if (playfieldEnabled) changeAtClock();
+
+            v = (i & 0x01) !== 0;
+            if (playfieldReflected !== v) {
+                playfieldReflected = v;
+                playfieldUpdateSpriteR();
             }
-            var s, i;
-            if (playfieldReflected) {
-                s = 40; i = -1;
-            } else {
-                s = 19; i = 1;
+
+            v = (i & 0x02) !== 0;
+            if (playfieldScoreMode !== v) {
+                playfieldScoreMode = v;
+                if (!debug) {
+                    if (v) { playfieldLeftColor = player0Color; playfieldRightColor = player1Color }
+                    else playfieldColor = playfieldLeftColor = playfieldRightColor = ballColor;
+                }
             }
-            playfieldPattern[0]  = playfieldPattern[s+=i] = (PF0 & 0x10) !== 0;
-            playfieldPattern[1]  = playfieldPattern[s+=i] = (PF0 & 0x20) !== 0;
-            playfieldPattern[2]  = playfieldPattern[s+=i] = (PF0 & 0x40) !== 0;
-            playfieldPattern[3]  = playfieldPattern[s+=i] = (PF0 & 0x80) !== 0;
-            playfieldPattern[4]  = playfieldPattern[s+=i] = (PF1 & 0x80) !== 0;
-            playfieldPattern[5]  = playfieldPattern[s+=i] = (PF1 & 0x40) !== 0;
-            playfieldPattern[6]  = playfieldPattern[s+=i] = (PF1 & 0x20) !== 0;
-            playfieldPattern[7]  = playfieldPattern[s+=i] = (PF1 & 0x10) !== 0;
-            playfieldPattern[8]  = playfieldPattern[s+=i] = (PF1 & 0x08) !== 0;
-            playfieldPattern[9]  = playfieldPattern[s+=i] = (PF1 & 0x04) !== 0;
-            playfieldPattern[10] = playfieldPattern[s+=i] = (PF1 & 0x02) !== 0;
-            playfieldPattern[11] = playfieldPattern[s+=i] = (PF1 & 0x01) !== 0;
-            playfieldPattern[12] = playfieldPattern[s+=i] = (PF2 & 0x01) !== 0;
-            playfieldPattern[13] = playfieldPattern[s+=i] = (PF2 & 0x02) !== 0;
-            playfieldPattern[14] = playfieldPattern[s+=i] = (PF2 & 0x04) !== 0;
-            playfieldPattern[15] = playfieldPattern[s+=i] = (PF2 & 0x08) !== 0;
-            playfieldPattern[16] = playfieldPattern[s+=i] = (PF2 & 0x10) !== 0;
-            playfieldPattern[17] = playfieldPattern[s+=i] = (PF2 & 0x20) !== 0;
-            playfieldPattern[18] = playfieldPattern[s+=i] = (PF2 & 0x40) !== 0;
-            playfieldPattern[19] = playfieldPattern[s+=i] = (PF2 & 0x80) !== 0;
+
+            playfieldPriority = (i & 0x04) !== 0;
         }
-        playfieldCurrentPixel = playfieldPattern[((clock - HBLANK_DURATION) >>> 2)];
-    };
 
-    var playfieldDelaySpriteChange = function(part, sprite) {
-        observableChange();
-        if (debug) debugPixel(DEBUG_PF_GR_COLOR);
-        playfieldPerformDelayedSpriteChange(true);
-        playfieldDelayedChangeClock = clock;
-        playfieldDelayedChangePart = part;
-        playfieldDelayedChangePattern = sprite;
-    };
-
-    var playfieldPerformDelayedSpriteChange = function(force) {
-        // Only commits change if there is one and the delay has passed
-        if (playfieldDelayedChangePart === -1) return;
-        if (!force) {
-            var dif = clock - playfieldDelayedChangeClock;
-            if (dif === 0 || dif === 1) return;
+        v = i & 0x30;
+        if (v !== (CTRLPF & 0x30)) {
+            if (ballEnabled) changeAtClock();
+            ballLineSpritePointer = (v >> 1) << 6;
         }
-        observableChange();
-        if 		(playfieldDelayedChangePart === 0) PF0 = playfieldDelayedChangePattern;
-        else if	(playfieldDelayedChangePart === 1) PF1 = playfieldDelayedChangePattern;
-        else if (playfieldDelayedChangePart === 2) PF2 = playfieldDelayedChangePattern;
-        playfieldPatternInvalid = true;
-        playfieldDelayedChangePart = -1;		// Marks the delayed change as nothing
+
+        CTRLPF = i;
     };
 
-    var ballSetGraphic = function(value) {
-        observableChange();
-        ballDelayedEnablement = (value & 0x02) != 0;
-        if (!ballVerticalDelay) ballEnabled = ballDelayedEnablement;
-    };
+    function playfieldUpdateSprite() {
+        playfieldPatternL = (PF2 << 12) | (jt.Util.reverseInt8(PF1) << 4) | ((PF0 & 0xf0) >> 4);
+        playfieldUpdateSpriteR();
+    }
 
-    var player0SetShape = function(shape) {
-        observableChange();
-        // Missile size
-        var speed = shape & 0x30;
-        if 		(speed === 0x00) speed = 8;		// Normal size = 8 = full speed = 1 pixel per clock
-        else if	(speed === 0x10) speed = 4;
-        else if	(speed === 0x20) speed = 2;
-        else if	(speed === 0x30) speed = 1;
-        if (missile0ScanSpeed !== speed) {
-            // if a copy is about to start, adjust for the new speed
-            if (missile0ScanCounter > 7) missile0ScanCounter = 7 + (missile0ScanCounter - 7) / missile0ScanSpeed * speed;
-            // if a copy is being scanned, kill the scan
-            else if (missile0ScanCounter >= 0) missile0ScanCounter = -1;
-            missile0ScanSpeed = speed;
-        }
-        // Player size and copies
-        if ((shape & 0x07) === 0x05) {			// Double size = 1/2 speed
-            speed = 2;
-            player0CloseCopy = player0MediumCopy = player0WideCopy = false;
-        } else if ((shape & 0x07) === 0x07) {	// Quad size = 1/4 speed
-            speed = 1;
-            player0CloseCopy = player0MediumCopy = player0WideCopy = false;
+    function playfieldUpdateSpriteR() {
+        playfieldPatternR = playfieldReflected ? (jt.Util.reverseInt8(PF0) << 16) | (PF1 << 8) | jt.Util.reverseInt8(PF2) : playfieldPatternL;
+        if (playfieldPatternL !== 0 || playfieldPatternR !== 0) {
+            playfieldEnabled = true; augmentCollisionsPossible();
         } else {
-            speed = 4;							// Normal size = 4 = full speed = 1 pixel per clock
-            player0CloseCopy =  (shape & 0x01) !== 0;
-            player0MediumCopy = (shape & 0x02) !== 0;
-            player0WideCopy =   (shape & 0x04) !== 0;
+            playfieldEnabled = false; collisionsPossible &= PFC;
         }
-        if (player0ScanSpeed !== speed) {
-            // if a copy is about to start, adjust for the new speed
-            if (player0ScanCounter > 31) player0ScanCounter = 31 + (player0ScanCounter - 31) / player0ScanSpeed * speed;
-            // if a copy is being scanned, kill the scan
-            else if (player0ScanCounter >= 0) player0ScanCounter = -1;
-            player0ScanSpeed = speed;
-        }
-    };
+    }
 
-    var player1SetShape = function(shape) {
-        observableChange();
-        // Missile size
-        var speed = shape & 0x30;
-        if 		(speed === 0x00) speed = 8;		// Normal size = 8 = full speed = 1 pixel per clock
-        else if	(speed === 0x10) speed = 4;
-        else if	(speed === 0x20) speed = 2;
-        else if	(speed === 0x30) speed = 1;
-        if (missile1ScanSpeed !== speed) {
-            // if a copy is about to start, adjust for the new speed
-            if (missile1ScanCounter > 7) missile1ScanCounter = 7 + (missile1ScanCounter - 7) / missile1ScanSpeed * speed;
-            // if a copy is being scanned, kill the scan
-            else if (missile1ScanCounter >= 0) missile1ScanCounter = -1;
-            missile1ScanSpeed = speed;
-        }
-        // Player size and copies
-        if ((shape & 0x07) === 0x05) {			// Double size = 1/2 speed
-            speed = 2;
-            player1CloseCopy = player1MediumCopy = player1WideCopy = false;
-        } else if ((shape & 0x07) === 0x07) {	// Quad size = 1/4 speed
-            speed = 1;
-            player1CloseCopy = player1MediumCopy = player1WideCopy = false;
+    function ballSetEnabled(boo) {
+        if (boo) {
+            ballEnabled = true; augmentCollisionsPossible();
         } else {
-            speed = 4;							// Normal size = 4 = full speed = 1 pixel per clock
-            player1CloseCopy =  (shape & 0x01) !== 0;
-            player1MediumCopy = (shape & 0x02) !== 0;
-            player1WideCopy =   (shape & 0x04) !== 0;
+            ballEnabled = false; collisionsPossible &= BLC;
         }
-        if (player1ScanSpeed !== speed) {
-            // if a copy is about to start, adjust to produce the same start position
-            if (player1ScanCounter > 31) player1ScanCounter = 31 + (player1ScanCounter - 31) / player1ScanSpeed * speed;
-            // if a copy is being scanned, kill the scan
-            else if (player1ScanCounter >= 0) player1ScanCounter = -1;
-            player1ScanSpeed = speed;
-        }
-    };
+    }
 
-    var playfieldAndBallSetShape = function(shape) {
-        observableChange();
-        var reflect = (shape & 0x01) !== 0;
-        if (playfieldReflected != reflect) {
-            playfieldReflected = reflect;
-            playfieldPatternInvalid = true;
+    function player0SetShape(i) {
+        if (NUSIZ0 === i) return;
+
+        var dif = NUSIZ0 ^ i;
+        var oldNUSIZ0 = NUSIZ0;
+        NUSIZ0 = i;
+        var newShape = (i & 7);
+        var c = clock < HBLANK_DURATION ? 2 : clock - HBLANK_DURATION + 2;
+
+        //if (debug) debugPixel(DEBUG_ALT_COLOR);
+
+        if (dif & 0x07) {
+            // Enter Alt mode?
+            if (!player0Alt) {
+                var into = c - player0Pixel; if (into < 0) into += 160; else if (into >= 160) into -= 160;
+                var oldScan = playerScanOffsetsShape[(oldNUSIZ0 & 7) * 160 + into];
+                var newScan = playerScanOffsetsShape[newShape * 160 + into];
+                if (newScan !== oldScan) {
+                    if (player0Enabled) changeAtClockPlus(2);
+                    player0Alt = player0Pixel >= 80 ? 1 : 2; player0LineSpritePointer += 20;
+                    player0AltFrom = into;
+                    player0AltLength = playerCopyLengthPerShape[newShape];
+                    if (oldScan & 0xc0)
+                        player0AltCopyOffset = oldScan & 0xbf;              // Scan about to start or in empty area
+                    else if (clock < HBLANK_DURATION && hMoveHitBlank)
+                        player0AltCopyOffset = 0x80;                        // Middle of scan during HBLANK, kill scan
+                    else {
+                        var pixelSize = playerPixelSizePerShape[newShape];
+                        player0AltCopyOffset = playerScanStartPerShape[newShape] + oldScan * pixelSize + (into & 1);
+                        player0AltLength -= (newScan & 0xc0 ? 0 : newScan) * pixelSize;
+                    }
+
+                    //if (debug && videoSignal.monitor.currentLine() === 150) debugInfo("oldScan: " + oldScan.toString(16) + ", newScan: " + newScan.toString(16) + ", len: " + player0AltLength);
+                }
+            }
+            player0UpdateSprite(2);
         }
-        playfieldScoreMode = (shape & 0x02) !== 0;
-        playfieldPriority = (shape & 0x04) !== 0;
-        var speed = shape & 0x30;
-        if 		(speed === 0x00) speed = 8;		// Normal size = 8 = full speed = 1 pixel per clock
-        else if	(speed === 0x10) speed = 4;
-        else if	(speed === 0x20) speed = 2;
-        else if	(speed === 0x30) speed = 1;
-        if (ballScanSpeed !== speed) {
-            // if a copy is about to start, adjust for the new speed
-            if (ballScanCounter > 7) ballScanCounter = 7 + (ballScanCounter - 7) / ballScanSpeed * speed;
-            // if a copy is being scanned, kill the scan
-            else if (ballScanCounter >= 0) ballScanCounter = -1;
-            ballScanSpeed = speed;
+
+        if (dif & 0x37) {
+            // Enter Alt mode?
+            if (!missile0Alt) {
+                into = c - missile0Pixel; if (into < 0) into += 160; else if (into >= 160) into -= 160;
+                oldScan = missileScanOffsetsShape[(((oldNUSIZ0 & 0x30) >> 1) | (oldNUSIZ0 & 7)) * 160 + into];
+                newScan = missileScanOffsetsShape[(((i & 0x30) >> 1) | newShape) * 160 + into];
+                if (newScan !== oldScan) {
+                    if (missile0Enabled) changeAtClockPlus(2);
+                    missile0Alt = missile0Pixel >= 80 ? 1 : 2; missile0LineSpritePointer += 20;
+                    missile0AltFrom = into;
+                    var size = (i & 0x30) >> 4;
+                    missile0AltLength = 4 + (1 << size);
+                    if (oldScan & 0xc0)
+                        missile0AltCopyOffset = oldScan & 0xbf;              // Scan about to start or in empty area
+                    else if (clock < HBLANK_DURATION && hMoveHitBlank)
+                        missile0AltCopyOffset = 0x80;                        // Middle of scan during HBLANK, kill scan
+                    else {
+                        missile0AltCopyOffset = 4 + (oldScan << size) + (into & 1);
+                        missile0AltLength -= (newScan & 0xc0 ? 0 : newScan) << size;
+                    }
+                }
+            }
+            missile0UpdateSprite(2);
         }
-    };
+    }
+
+    function player0SetSprite(i) {
+        if (debug) debugPixel(DEBUG_P0_GR_COLOR);
+        if (GRP0d !== i) {
+            GRP0d = i;
+            if (!VDELP0) player0UpdateSprite(1);
+        }
+        if (GRP1 !== GRP1d) {
+            GRP1 = GRP1d;
+            if (VDELP1) player1UpdateSprite(1);
+        }
+    }
+
+    function player0UpdateSprite(clockPlus) {
+        var sprite = VDELP0 ? GRP0 : GRP0d;
+        if (sprite) {
+            var p = (((REFP0 << 11) | (sprite << 3) | (NUSIZ0 & 7)) << 6) + (player0Alt ? 20 : 0);
+            if (!player0Enabled || player0LineSpritePointer !== p) {
+                changeAtClockPlus(clockPlus);
+                player0LineSpritePointer = p;
+                if (player0Alt) player0DefineAlt();
+            }
+            if (!player0Enabled) {
+                player0Enabled = true; augmentCollisionsPossible();
+            }
+        } else {
+            if (player0Enabled) {
+                changeAtClockPlus(clockPlus);
+                player0Enabled = false; collisionsPossible &= P0C;
+            }
+        }
+    }
+
+    function player1SetShape(i) {
+        if (NUSIZ1 === i) return;
+
+        var dif = NUSIZ1 ^ i;
+        var oldNUSIZ1 = NUSIZ1;
+        NUSIZ1 = i;
+        var newShape = (i & 7);
+        var c = clock < HBLANK_DURATION ? 2 : clock - HBLANK_DURATION + 2;
+
+        if (dif & 0x07) {
+            // Enter Alt mode?
+            if (!player1Alt) {
+                var into = c - player1Pixel; if (into < 0) into += 160; else if (into >= 160) into -= 160;
+                var oldScan = playerScanOffsetsShape[(oldNUSIZ1 & 7) * 160 + into];
+                var newScan = playerScanOffsetsShape[newShape * 160 + into];
+                if (newScan !== oldScan) {
+                    if (player1Enabled) changeAtClockPlus(2);
+                    player1Alt = player1Pixel >= 80 ? 1 : 2; player1LineSpritePointer += 40;
+                    player1AltFrom = into;
+                    player1AltLength = playerCopyLengthPerShape[newShape];
+                    if (oldScan & 0xc0)
+                        player1AltCopyOffset = oldScan & 0xbf;              // Scan about to start or in empty area
+                    else if (clock < HBLANK_DURATION && hMoveHitBlank)
+                        player1AltCopyOffset = 0x80;                        // Middle of scan during HBLANK, kill scan
+                    else {
+                        player1AltCopyOffset = playerScanStartPerShape[newShape] + oldScan * playerPixelSizePerShape[newShape] + (into & 1);
+                        player1AltLength -= (newScan & 0xc0 ? 0 : newScan) * playerPixelSizePerShape[newShape];
+                    }
+                }
+            }
+            player1UpdateSprite(2);
+        }
+
+        if (dif & 0x37) {
+            // Enter Alt mode?
+            if (!missile1Alt) {
+                into = c - missile1Pixel; if (into < 0) into += 160; else if (into >= 160) into -= 160;
+                oldScan = missileScanOffsetsShape[(((oldNUSIZ1 & 0x30) >> 1) | (oldNUSIZ1 & 7)) * 160 + into];
+                newScan = missileScanOffsetsShape[(((i & 0x30) >> 1) | newShape) * 160 + into];
+                if (newScan !== oldScan) {
+                    if (missile1Enabled) changeAtClockPlus(2);
+                    missile1Alt = missile1Pixel >= 80 ? 1 : 2; missile1LineSpritePointer += 40;
+                    missile1AltFrom = into;
+                    var size = (i & 0x30) >> 4;
+                    missile1AltLength = 4 + (1 << size);
+                    if (oldScan & 0xc0)
+                        missile1AltCopyOffset = oldScan & 0xbf;              // Scan about to start or in empty area
+                    else if (clock < HBLANK_DURATION && hMoveHitBlank)
+                        missile1AltCopyOffset = 0x80;                        // Middle of scan during HBLANK, kill scan
+                    else {
+                        missile1AltCopyOffset = 4 + (oldScan << size) + (into & 1);
+                        missile1AltLength -= (newScan & 0xc0 ? 0 : newScan) << size;
+                    }
+                }
+            }
+            missile1UpdateSprite(2);
+        }
+    }
+
+    function player1SetSprite(i) {
+        if (debug) debugPixel(DEBUG_P1_GR_COLOR);
+        if (GRP1d !== i) {
+            GRP1d = i;
+            if (!VDELP1) player1UpdateSprite(1);
+        }
+        if (GRP0 !== GRP0d) {
+            GRP0 = GRP0d;
+            if (VDELP0) player0UpdateSprite(1);
+        }
+        if (ENABL !== ENABLd) {
+            ENABL = ENABLd;
+            if (VDELBL) changeAtClockPlus(1);
+            ballSetEnabled(ENABL);
+        }
+    }
+
+    function player1UpdateSprite(clockPlus) {
+        var sprite = VDELP1 ? GRP1 : GRP1d;
+        if (sprite) {
+            var p = (((REFP1 << 11) | (sprite << 3) | (NUSIZ1 & 7)) << 6) + (player1Alt ? 40 : 0);
+            if (!player1Enabled || player1LineSpritePointer !== p) {
+                changeAtClockPlus(clockPlus);
+                player1LineSpritePointer = p;
+                if (player1Alt) player1DefineAlt();
+            }
+            if (!player1Enabled) {
+                player1Enabled = true; augmentCollisionsPossible();
+            }
+        } else {
+            if (player1Enabled) {
+                changeAtClockPlus(clockPlus);
+                player1Enabled = false; collisionsPossible &= P1C;
+            }
+        }
+    }
+
+    function missile0UpdateSprite(clockPlus) {
+        var p = ((((NUSIZ0 & 0x30) >> 1) | (NUSIZ0 & 7)) << 6) + (missile0Alt ? 20 : 0);
+        if (missile0LineSpritePointer !== p) {
+            if (missile0Enabled) {
+                changeAtClockPlus(clockPlus);
+                missile0LineSpritePointer = p;
+                if (missile0Alt) missile0DefineAlt();
+            } else
+                missile0LineSpritePointer = p;
+        }
+    }
+
+    function missile0SetEnabled(boo) {
+        if (boo) {
+            missile0Enabled = true; augmentCollisionsPossible();
+            if (missile0Alt) missile0DefineAlt();
+        } else {
+            missile0Enabled = false; collisionsPossible &= M0C;
+        }
+    }
+
+    function missile0SetResetToPlayer(i) {
+        if (RESMP0 === (i & 0x02)) return;
+
+        if (ENAM0) {
+            changeAtClock();
+            missile0SetEnabled(!(RESMP0 = i & 0x02));
+        } else
+            RESMP0 = i & 0x02;
+
+        if (!RESMP0) {
+            missile0Pixel = player0Pixel + missileCenterOffsetsPerPlayerSize[NUSIZ0 & 0x07]; if (missile0Pixel >= 160) missile0Pixel -= 160;
+        }
+    }
+
+    function missile1UpdateSprite(clockPlus) {
+        var p = ((((NUSIZ1 & 0x30) >> 1) | (NUSIZ1 & 7)) << 6) + (missile1Alt ? 40 : 0);
+        if (missile1LineSpritePointer !== p) {
+            if (missile1Enabled) {
+                changeAtClockPlus(clockPlus);
+                missile1LineSpritePointer = p;
+                if (missile1Alt) missile1DefineAlt();
+            } else
+                missile1LineSpritePointer = p;
+        }
+    }
+
+    function missile1SetEnabled(boo) {
+        if (boo) {
+            missile1Enabled = true; augmentCollisionsPossible();
+            if (missile1Alt) missile1DefineAlt();
+        } else {
+            missile1Enabled = false; collisionsPossible &= M1C;
+        }
+    }
+
+    function missile1SetResetToPlayer(i) {
+        if (RESMP1 === (i & 0x02)) return;
+
+        if (ENAM1) {
+            changeAtClock();
+            missile1SetEnabled(!(RESMP1 = i & 0x02));
+        } else
+            RESMP1 = i & 0x02;
+
+        if (!RESMP1) {
+            missile1Pixel = player1Pixel + missileCenterOffsetsPerPlayerSize[NUSIZ1 & 0x07]; if (missile1Pixel >= 160) missile1Pixel -= 160;
+        }
+    }
 
     var hitRESP0 = function() {
-        observableChange(); observableChangeExtended = true;
         if (debug) debugPixel(DEBUG_P0_RES_COLOR);
 
-        // Hit in last pixel of HBLANK or after
-        if (clock >= HBLANK_DURATION + (hMoveHitBlank ? 8-1 : 0)) {
-            if (player0Counter !== 155) player0RecentReset = true;
-            player0Counter = 155;
-            return;
-        }
+        var r = getRESxPixel();
+        var p = r >= 0 ? r : -r;
+        if (player0Pixel !== p) {
+            if (player0Enabled) changeAtClock();
+            var pStart = (r >= 0 ? p : 0);
+            var into = pStart - player0Pixel; if (into < 0) into += 160;
+            player0Pixel = p;
+            var nusiz = NUSIZ0 & 7;
 
-        // Hit before last pixel of HBLANK
-        var d = 0;									// No HMOVE, displacement = 0
-        if (hMoveHitBlank) {						// With HMOVE
-            if (clock >= HBLANK_DURATION)			// During extended HBLANK
-                d = (HBLANK_DURATION - clock) + 8;
-            else {
-                d = (clock - hMoveHitClock - 4) >> 2;
-                if (d > 8) d = 8;
+            if (player0Alt) {
+                if (into <= playerCopyLengthPerShape[nusiz]) return;                  // Keep current Alt def if still in first copy
+            } else
+                player0LineSpritePointer += 20;
+
+            var delta = pStart - p; if (delta < -100) delta += 160;
+            player0Alt = p >= 80 ? 1 : 2;
+            player0AltFrom = delta >= 0 ? delta : 160 + delta;
+            player0AltLength = playerCopyLengthPerShape[nusiz] - delta;
+            player0AltCopyOffset = playerCopyOffsetsReset[nusiz * 160 + into];
+            if (player0Enabled) player0DefineAlt();
+
+            //if (debug && videoSignal.monitor.currentLine() === 80) debugInfo("player0Pixel: " + player0Pixel + ", into: " + into + ", delta: " + delta + ", from: " + player0AltFrom + ", len: " + player0AltLength + ", off: " + player0AltCopyOffset);
+        }
+    };
+
+    function player0DefineAlt() {
+        var control = (player0AltFrom << 16) | (player0AltLength << 8) | player0AltCopyOffset;
+        var controlPointer = (player0LineSpritePointer - 20) >> 6;
+        if (player0AltControl[controlPointer] === control) return;
+
+        var basePointer = player0LineSpritePointer - 20;
+        for (var b = 0; b < 20; ++b) playerLineSprites[player0LineSpritePointer + b] = playerLineSprites[basePointer + b];
+
+        var p = player0AltFrom;
+        if (player0AltCopyOffset & 0x80) {
+            // Just clear bits
+            for (var c = 0; c < player0AltLength; ++c) {
+                playerLineSprites[player0LineSpritePointer + (p >> 3)] &= ~(1 << (p & 0x07));
+                if (++p >= 160) p -= 160;
+            }
+        } else {
+            // Copy bits from base
+            basePointer -= objectsLineSpritePointerDeltaToSingleCopy[(NUSIZ0 & 7)];
+            for (var pBase = player0AltCopyOffset, to = player0AltCopyOffset + player0AltLength; pBase < to; ++pBase) {
+                if ((playerLineSprites[basePointer + (pBase >> 3)] >> (pBase & 0x07)) & 1)
+                    playerLineSprites[player0LineSpritePointer + (p >> 3)] |= (1 << (p & 0x07));
+                else
+                    playerLineSprites[player0LineSpritePointer + (p >> 3)] &= ~(1 << (p & 0x07));
+                if (++p >= 160) p -= 160;
             }
         }
 
-        player0Counter = 157 - d;
-        player0RecentReset = player0Counter <= 155;
-    };
+        player0AltControl[controlPointer] = control;
+    }
 
     var hitRESP1 = function() {
-        observableChange(); observableChangeExtended = true;
         if (debug) debugPixel(DEBUG_P1_RES_COLOR);
 
-        // Hit in last pixel of HBLANK or after
-        if (clock >= HBLANK_DURATION + (hMoveHitBlank ? 8-1 : 0)) {
-            if (player1Counter !== 155) player1RecentReset = true;
-            player1Counter = 155;
-            return;
-        }
+        var r = getRESxPixel();
+        var p = r >= 0 ? r : -r;
+        if (player1Pixel !== p) {
+            if (player1Enabled) changeAtClock();
+            var pStart = (r >= 0 ? p : 0);
+            var into = pStart - player1Pixel; if (into < 0) into += 160;
+            player1Pixel = p;
+            var nusiz = NUSIZ1 & 7;
 
-        // Hit before last pixel of HBLANK
-        var d = 0;									// No HMOVE, displacement = 0
-        if (hMoveHitBlank) {						// With HMOVE
-            if (clock >= HBLANK_DURATION)			// During extended HBLANK
-                d = (HBLANK_DURATION - clock) + 8;
-            else {
-                d = (clock - hMoveHitClock - 4) >> 2;
-                if (d > 8) d = 8;
+            if (player1Alt) {
+                if (into <= playerCopyLengthPerShape[nusiz]) return;                  // Keep current Alt def if still in first copy
+            } else
+                player1LineSpritePointer += 40;
+
+            var delta = pStart - p; if (delta < -100) delta += 160;
+            player1Alt = p >= 80 ? 1 : 2;
+            player1AltFrom = delta >= 0 ? delta : 160 + delta;
+            player1AltLength = playerCopyLengthPerShape[nusiz] - delta;
+            player1AltCopyOffset = playerCopyOffsetsReset[nusiz * 160 + into];
+            if (player1Enabled) player1DefineAlt();
+        }
+    };
+
+    function player1DefineAlt() {
+        var control = (player1AltFrom << 16) | (player1AltLength << 8) | player1AltCopyOffset;
+        var controlPointer = (player1LineSpritePointer - 40) >> 6;
+        if (player1AltControl[controlPointer] === control) return;
+
+        var basePointer = player1LineSpritePointer - 40;
+        for (var b = 0; b < 20; ++b) playerLineSprites[player1LineSpritePointer + b] = playerLineSprites[basePointer + b];
+
+        var p = player1AltFrom;
+        if (player1AltCopyOffset & 0x80) {
+            // Just clear bits
+            for (var c = 0; c < player1AltLength; ++c) {
+                playerLineSprites[player1LineSpritePointer + (p >> 3)] &= ~(1 << (p & 0x07));
+                if (++p >= 160) p -= 160;
+            }
+        } else {
+            // Copy bits from base
+            basePointer -= objectsLineSpritePointerDeltaToSingleCopy[(NUSIZ1 & 7)];
+            for (var pBase = player1AltCopyOffset, to = player1AltCopyOffset + player1AltLength; pBase < to; ++pBase) {
+                if ((playerLineSprites[basePointer + (pBase >> 3)] >> (pBase & 0x07)) & 1)
+                    playerLineSprites[player1LineSpritePointer + (p >> 3)] |= (1 << (p & 0x07));
+                else
+                    playerLineSprites[player1LineSpritePointer + (p >> 3)] &= ~(1 << (p & 0x07));
+                if (++p >= 160) p -= 160;
             }
         }
 
-        player1Counter = 157 - d;
-        player1RecentReset = player1Counter <= 155;
-    };
+        player1AltControl[controlPointer] = control;
+    }
 
     var hitRESM0 = function() {
-        observableChange(); observableChangeExtended = true;
         if (debug) debugPixel(DEBUG_M0_COLOR);
 
-        // Hit in last pixel of HBLANK or after
-        if (clock >= HBLANK_DURATION + (hMoveHitBlank ? 8-1 : 0)) {
-            if (missile0Counter !== 155) missile0RecentReset = true;
-            missile0Counter = 155;
-            return;
-        }
+        var r = getRESxPixel();
+        var p = r >= 0 ? r : -r;
+        if (missile0Pixel !== p) {
+            if (missile0Enabled) changeAtClock();
+            var pStart = (r >= 0 ? p : 0);
+            var into = pStart - missile0Pixel; if (into < 0) into += 160;
+            missile0Pixel = p;
 
-        // Hit before last pixel of HBLANK
-        var d = 0;									// No HMOVE, displacement = 0
-        if (hMoveHitBlank) {						// With HMOVE
-            if (clock >= HBLANK_DURATION)			// During extended HBLANK
-                d = (HBLANK_DURATION - clock) + 8;
-            else {
-                d = (clock - hMoveHitClock - 4) >> 2;
-                if (d > 8) d = 8;
+            if (missile0Alt) {
+                if (into <= 4 + (1 << ((NUSIZ0 & 0x30) >> 4))) return;                // Keep current Alt def if still in first copy
+            } else
+                missile0LineSpritePointer += 20;
+
+            var delta = pStart - p; if (delta < -100) delta += 160;
+            missile0Alt = p >= 80 ? 1 : 2;
+            missile0AltFrom = delta >= 0 ? delta : 160 + delta;
+            missile0AltLength = 4 + (1 << ((NUSIZ0 & 0x30) >> 4)) - delta;
+            missile0AltCopyOffset = missileCopyOffsetsReset[(((NUSIZ0 & 0x30) >> 1) | (NUSIZ0 & 7)) * 160 + into];
+            if (missile0Enabled) missile0DefineAlt();
+        }
+    };
+
+    function missile0DefineAlt() {
+        var control = (missile0AltFrom << 16) | (missile0AltLength << 8) | missile0AltCopyOffset;
+        var controlPointer = (missile0LineSpritePointer - 20) >> 6;
+        if (missile0AltControl[controlPointer] === control) return;
+
+        var basePointer = missile0LineSpritePointer - 20;
+        for (var b = 0; b < 20; ++b) missileBallLineSprites[missile0LineSpritePointer + b] = missileBallLineSprites[basePointer + b];
+
+        var p = missile0AltFrom;
+        if (missile0AltCopyOffset & 0x80) {
+            // Just clear bits
+            for (var c = 0; c < missile0AltLength; ++c) {
+                missileBallLineSprites[missile0LineSpritePointer + (p >> 3)] &= ~(1 << (p & 0x07));
+                if (++p >= 160) p -= 160;
+            }
+        } else {
+            // Copy bits from base
+            basePointer -= objectsLineSpritePointerDeltaToSingleCopy[(NUSIZ0 & 7)];
+            for (var pBase = missile0AltCopyOffset, to = missile0AltCopyOffset + missile0AltLength; pBase < to; ++pBase) {
+                if ((missileBallLineSprites[basePointer + (pBase >> 3)] >> (pBase & 0x07)) & 1)
+                    missileBallLineSprites[missile0LineSpritePointer + (p >> 3)] |= (1 << (p & 0x07));
+                else
+                    missileBallLineSprites[missile0LineSpritePointer + (p >> 3)] &= ~(1 << (p & 0x07));
+                if (++p >= 160) p -= 160;
             }
         }
 
-        missile0Counter = 157 - d;
-        missile0RecentReset = missile0Counter <= 155;
-    };
+        missile0AltControl[controlPointer] = control;
+    }
 
     var hitRESM1 = function() {
-        observableChange(); observableChangeExtended = true;
         if (debug) debugPixel(DEBUG_M1_COLOR);
 
-        // Hit in last pixel of HBLANK or after
-        if (clock >= HBLANK_DURATION + (hMoveHitBlank ? 8-1 : 0)) {
-            if (missile1Counter !== 155) missile1RecentReset = true;
-            missile1Counter = 155;
-            return;
-        }
+        var r = getRESxPixel();
+        var p = r >= 1 ? r : -r;
+        if (missile1Pixel !== p) {
+            if (missile1Enabled) changeAtClock();
+            var pStart = (r >= 0 ? p : 0);
+            var into = pStart - missile1Pixel; if (into < 0) into += 160;
+            missile1Pixel = p;
 
-        // Hit before last pixel of HBLANK
-        var d = 0;									// No HMOVE, displacement = 0
-        if (hMoveHitBlank) {						// With HMOVE
-            if (clock >= HBLANK_DURATION)			// During extended HBLANK
-                d = (HBLANK_DURATION - clock) + 8;
-            else {
-                d = (clock - hMoveHitClock - 4) >> 2;
-                if (d > 8) d = 8;
-            }
-        }
+            if (missile1Alt) {
+                if (into <= 4 + (1 << ((NUSIZ1 & 0x30) >> 4))) return;                // Keep current Alt def if still in first copy
+            } else
+                missile1LineSpritePointer += 40;
 
-        missile1Counter = 157 - d;
-        missile1RecentReset = missile1Counter <= 155;
+            var delta = pStart - p; if (delta < -100) delta += 160;
+            missile1Alt = p >= 80 ? 1 : 2;
+            missile1AltFrom = delta >= 0 ? delta : 160 + delta;
+            missile1AltLength = 4 + (1 << ((NUSIZ1 & 0x30) >> 4)) - delta;
+            missile1AltCopyOffset = missileCopyOffsetsReset[(((NUSIZ1 & 0x30) >> 1) | (NUSIZ1 & 7)) * 160 + into];
+            if (missile1Enabled) missile1DefineAlt();
+        }
     };
 
-    var hitRESBL = function() {
-        observableChange();
-        if (debug) debugPixel(DEBUG_BL_COLOR);
+    function missile1DefineAlt() {
+        var control = (missile1AltFrom << 16) | (missile1AltLength << 8) | missile1AltCopyOffset;
+        var controlPointer = (missile1LineSpritePointer - 40) >> 6;
+        if (missile1AltControl[controlPointer] === control) return;
 
-        // Hit in last pixel of HBLANK or after
-        if (clock >= HBLANK_DURATION + (hMoveHitBlank ? 8-1 : 0)) {
-            ballCounter = 155;
-            return;
+        var basePointer = missile1LineSpritePointer - 40;
+        for (var b = 0; b < 20; ++b) missileBallLineSprites[missile1LineSpritePointer + b] = missileBallLineSprites[basePointer + b];
+
+        var p = missile1AltFrom;
+        if (missile1AltCopyOffset & 0x80) {
+            // Just clear bits
+            for (var c = 0; c < missile1AltLength; ++c) {
+                missileBallLineSprites[missile1LineSpritePointer + (p >> 3)] &= ~(1 << (p & 0x07));
+                if (++p >= 160) p -= 160;
+            }
+        } else {
+            // Copy bits from base
+            basePointer -= objectsLineSpritePointerDeltaToSingleCopy[(NUSIZ1 & 7)];
+            for (var pBase = missile1AltCopyOffset, to = missile1AltCopyOffset + missile1AltLength; pBase < to; ++pBase) {
+                if ((missileBallLineSprites[basePointer + (pBase >> 3)] >> (pBase & 0x07)) & 1)
+                    missileBallLineSprites[missile1LineSpritePointer + (p >> 3)] |= (1 << (p & 0x07));
+                else
+                    missileBallLineSprites[missile1LineSpritePointer + (p >> 3)] &= ~(1 << (p & 0x07));
+                if (++p >= 160) p -= 160;
+            }
         }
 
-        // Hit before last pixel of HBLANK
-        var d = 0;				// No HMOVE, displacement = 0
-        if (hMoveHitBlank)		// With HMOVE
-            if (clock >= HBLANK_DURATION)				// During extended HBLANK
-                d = (HBLANK_DURATION - clock) + 8;
-            else {
-                d = (clock - hMoveHitClock - 4) >> 2;
-                if (d > 8) d = 8;
-            }
+        missile1AltControl[controlPointer] = control;
+    }
 
-        ballCounter = 157 - d;
+    var hitRESBL = function() {
+        if (debug) debugPixel(DEBUG_BL_COLOR);
+
+        var r = getRESxPixel();
+        var p = r >= 0 ? r : -r;
+        if (ballPixel !== p) {
+            if (ballEnabled) changeAtClock();
+            ballPixel = p;
+        }
     };
 
     var hitHMOVE = function() {
@@ -620,212 +933,121 @@ jt.Tia = function(pCpu, pPia) {
         }
         // Unsupported HMOVE
         if (clock < 219) {
-            debugInfo("Unsupported HMOVE hit");
+            // debugInfo("Unsupported HMOVE hit");
             return;
         }
         // Late HMOVE: Clocks [219-224] hide HMOVE blank next line, clocks [225, 0] produce normal behavior next line
+        // debugInfo("Late HMOVE hit");
         hMoveHitClock = 160 - clock;
         hMoveLateHit = true;
         hMoveLateHitBlank = clock >= 225;
     };
 
+    // Can only be called during HBLANK!
     var performHMOVE = function() {
+        // Change objects position
         var add;
-        var vis = false;
+        var changed = false;
         add = (hMoveHitBlank ? HMP0 : HMP0 + 8); if (add !== 0) {
-            vis = true;
-            if (add > 0) {
-                for (var i = add; i > 0; i--) player0ClockCounter();
-            } else {
-                player0Counter += add; if (player0Counter < 0) player0Counter += 160;
-                if (player0ScanCounter >= 0) player0ScanCounter -= player0ScanSpeed * add;
-            }
+            player0Pixel -= add; if (player0Pixel >= 160) player0Pixel -= 160; else if (player0Pixel < 0) player0Pixel += 160;
+            if (player0Enabled) changed = true;
         }
         add = (hMoveHitBlank ? HMP1 : HMP1 + 8); if (add !== 0) {
-            vis = true;
-            if (add > 0) {
-                for (i = add; i > 0; i--) player1ClockCounter();
-            } else {
-                player1Counter += add; if (player1Counter < 0) player1Counter += 160;
-                if (player1ScanCounter >= 0) player1ScanCounter -= player1ScanSpeed * add;
-            }
+            player1Pixel -= add; if (player1Pixel >= 160) player1Pixel -= 160; else if (player1Pixel < 0) player1Pixel += 160;
+            if (player1Enabled) changed = true;
         }
         add = (hMoveHitBlank ? HMM0 : HMM0 + 8); if (add !== 0) {
-            vis = true;
-            if (add > 0) {
-                for (i = add; i > 0; i--) missile0ClockCounter();
-            } else {
-                missile0Counter += add; if (missile0Counter < 0) missile0Counter += 160;
-                if (missile0ScanCounter >= 0) missile0ScanCounter -= missile0ScanSpeed * add;
-            }
+            missile0Pixel -= add; if (missile0Pixel >= 160) missile0Pixel -= 160; else if (missile0Pixel < 0) missile0Pixel += 160;
+            if (missile0Enabled) changed = true;
         }
-        add = (hMoveHitBlank ? HMM1 : HMM1 + 8); if (add != 0) {
-            vis = true;
-            if (add > 0) {
-                for (i = add; i > 0; i--) missile1ClockCounter();
-            } else {
-                missile1Counter += add; if (missile1Counter < 0) missile1Counter += 160;
-                if (missile1ScanCounter >= 0) missile1ScanCounter -= missile1ScanSpeed * add;
-            }
+        add = (hMoveHitBlank ? HMM1 : HMM1 + 8); if (add !== 0) {
+            missile1Pixel -= add; if (missile1Pixel >= 160) missile1Pixel -= 160; else if (missile1Pixel < 0) missile1Pixel += 160;
+            if (missile1Enabled) changed = true;
         }
-        add = (hMoveHitBlank ? HMBL : HMBL + 8); if (add != 0) {
-            vis = true;
-            if (add > 0) {
-                for (i = add; i > 0; i--) ballClockCounter();
-            } else {
-                ballCounter += add; if (ballCounter < 0) ballCounter += 160;
-                if (ballScanCounter >= 0) ballScanCounter -= ballScanSpeed * add;
-            }
+        add = (hMoveHitBlank ? HMBL : HMBL + 8); if (add !== 0) {
+            ballPixel -= add; if (ballPixel >= 160) ballPixel -= 160; else if (ballPixel < 0) ballPixel += 160;
+            if (ballEnabled) changed = true;
         }
-        if (vis) observableChange();
+
+        if (changed) changeClock = hMoveHitBlank ? HBLANK_DURATION + 8 : HBLANK_DURATION;
     };
 
-    var objectsClockCounters = function() {
-        player0ClockCounter();
-        player1ClockCounter();
-        missile0ClockCounter();
-        missile1ClockCounter();
-        ballClockCounter();
-    };
+    // Negative values mean hit during HBLANK. Invert negative values to get object position, then Alt must be defined considering starting from pixel 0
+    function getRESxPixel() {
+        // Hit after complete HBLANK or last pixel of Extended HBLANK
+        if (clock >= HBLANK_DURATION + (hMoveHitBlank ? 8 - 1 : 0)) {
+            return clock - HBLANK_DURATION;
+        } else {
+            // Hit during HBLANK
+            if (hMoveHitBlank) {
+                if (clock >= HBLANK_DURATION) {
+                    return -6;
+                } else {
+                    var d = (clock - hMoveHitClock - 4) >> 2;   // Shift right proportionally to distance from HMOVE, up to 8 pixels
+                    if (d > 8) return -6;
+                    else if (d > 1) return -(d - 2);
+                    else return -(158 + d);
+                }
+            } else
+                return -158;
+        }
+    }
 
-    var player0ClockCounter = function() {
-        if (++player0Counter === 160) player0Counter = 0;
-        if (player0ScanCounter >= 0) {
-            // If missileResetToPlayer is on and the player scan has started the FIRST copy
-            if (missile0ResetToPlayer && player0Counter < 12 && player0ScanCounter >= 28 && player0ScanCounter <= 31)
-                missile0Counter = 156;
-            player0ScanCounter -= player0ScanSpeed;
-        }
-        // Start scans 4 clocks before each copy. Scan is between 0 and 31, each pixel = 4 scan clocks
-        if (player0Counter === 156) {
-            if (player0RecentReset) player0RecentReset = false;
-            else player0ScanCounter = 31 + player0ScanSpeed * (player0ScanSpeed === 4 ? 5 : 6);	// If Double or Quadruple size, delays 1 additional pixel
-        }
-        else if (player0Counter === 12) {
-            if (player0CloseCopy) player0ScanCounter = 31 + player0ScanSpeed * 5;
-        }
-        else if (player0Counter === 28) {
-            if (player0MediumCopy) player0ScanCounter = 31 + player0ScanSpeed * 5;
-        }
-        else if (player0Counter === 60) {
-            if (player0WideCopy) player0ScanCounter = 31 + player0ScanSpeed * 5;
-        }
-    };
+    function checkLateHMOVE() {
+        if (hMoveLateHit) {
+            hMoveLateHit = false;
+            hMoveHitBlank = hMoveLateHitBlank;
+            performHMOVE();
+        } else
+            hMoveHitBlank = false;
+    }
 
-    var player1ClockCounter = function() {
-        if (++player1Counter === 160) player1Counter = 0;
-        if (player1ScanCounter >= 0) {
-            // If missileResetToPlayer is on and the player scan has started the FIRST copy
-            if (missile1ResetToPlayer && player1Counter < 12 && player1ScanCounter >= 28 && player1ScanCounter <= 31)
-                missile1Counter = 156;
-            player1ScanCounter -= player1ScanSpeed;
+    function updateExtendedHBLANK() {
+        // Detect change in the extended HBLANK filling
+        if (hMoveHitBlank !== (linePixels[HBLANK_DURATION] === hBlankColor)) {
+            if (hMoveHitBlank) {
+                // Fills the extended HBLANK portion of the current line
+                linePixels[HBLANK_DURATION] = linePixels[HBLANK_DURATION + 1] = linePixels[HBLANK_DURATION + 2] = linePixels[HBLANK_DURATION + 3] =
+                    linePixels[HBLANK_DURATION + 4] = linePixels[HBLANK_DURATION + 5] = linePixels[HBLANK_DURATION + 6] = linePixels[HBLANK_DURATION + 7] =
+                        hBlankColor;    // This is faster than a fill
+            } else
+                changeClock = HBLANK_DURATION;
         }
-        // Start scans 4 clocks before each copy. Scan is between 0 and 31, each pixel = 4 scan clocks
-        if (player1Counter === 156) {
-            if (player1RecentReset) player1RecentReset = false;
-            else player1ScanCounter = 31 + player1ScanSpeed * (player1ScanSpeed === 4 ? 5 : 6);	// If Double or Quadruple size, delays 1 additional pixel
-        }
-        else if (player1Counter === 12) {
-            if (player1CloseCopy) player1ScanCounter = 31 + player1ScanSpeed * 5;
-        }
-        else if (player1Counter === 28) {
-            if (player1MediumCopy) player1ScanCounter = 31 + player1ScanSpeed * 5;
-        }
-        else if (player1Counter === 60) {
-            if (player1WideCopy) player1ScanCounter = 31 + player1ScanSpeed * 5;
-        }
-    };
+        if (hMoveHitBlank) renderClock = HBLANK_DURATION + 8;
+    }
 
-    var missile0ClockCounter = function() {
-        if (++missile0Counter === 160) missile0Counter = 0;
-        if (missile0ScanCounter >= 0) missile0ScanCounter -= missile0ScanSpeed;
-        // Start scans 4 clocks before each copy. Scan is between 0 and 7, each pixel = 8 scan clocks
-        if (missile0Counter === 156) {
-            if (missile0RecentReset) missile0RecentReset = false;
-            else missile0ScanCounter = 7 + missile0ScanSpeed * 4;
-        }
-        else if (missile0Counter === 12) {
-            if (player0CloseCopy) missile0ScanCounter = 7 + missile0ScanSpeed * 4;
-        }
-        else if (missile0Counter === 28) {
-            if (player0MediumCopy) missile0ScanCounter = 7 + missile0ScanSpeed * 4;
-        }
-        else if (missile0Counter === 60) {
-            if (player0WideCopy) missile0ScanCounter = 7 + missile0ScanSpeed * 4;
-        }
-    };
+    function endObjectsAltStatusMidLine() {
+        if (player0Alt === 1)  { if (player0Enabled)  changeAtClock(); player0Alt = 0;  player0LineSpritePointer -= 20; }
+        if (player1Alt === 1)  { if (player1Enabled)  changeAtClock(); player1Alt = 0;  player1LineSpritePointer -= 40; }
+        if (missile0Alt === 1) { if (missile0Enabled) changeAtClock(); missile0Alt = 0; missile0LineSpritePointer -= 20; }
+        if (missile1Alt === 1) { if (missile1Enabled) changeAtClock(); missile1Alt = 0; missile1LineSpritePointer -= 40; }
+    }
 
-    var missile1ClockCounter = function() {
-        if (++missile1Counter === 160) missile1Counter = 0;
-        if (missile1ScanCounter >= 0) missile1ScanCounter -= missile1ScanSpeed;
-        // Start scans 4 clocks before each copy. Scan is between 0 and 7, each pixel = 8 scan clocks
-        if (missile1Counter === 156) {
-            if (missile1RecentReset) missile1RecentReset = false;
-            else missile1ScanCounter = 7 + missile1ScanSpeed * 4;
-        }
-        else if (missile1Counter === 12) {
-            if (player1CloseCopy) missile1ScanCounter = 7 + missile1ScanSpeed * 4;
-        }
-        else if (missile1Counter === 28) {
-            if (player1MediumCopy) missile1ScanCounter = 7 + missile1ScanSpeed * 4;
-        }
-        else if (missile1Counter === 60) {
-            if (player1WideCopy) missile1ScanCounter = 7 + missile1ScanSpeed * 4;
-        }
-    };
+    function endObjectsAltStatusEndOfLine() {
+        if (player0Alt === 2)  { player0Alt = 0;  player0LineSpritePointer -= 20; }
+        if (player1Alt === 2)  { player1Alt = 0;  player1LineSpritePointer -= 40; }
+        if (missile0Alt === 2) { missile0Alt = 0; missile0LineSpritePointer -= 20; }
+        if (missile1Alt === 2) { missile1Alt = 0; missile1LineSpritePointer -= 40; }
+    }
 
-    var ballClockCounter = function() {
-        if (++ballCounter === 160) ballCounter = 0;
-        if (ballScanCounter >= 0) ballScanCounter -= ballScanSpeed;
-        // The ball does not have copies and does not wait for the next scanline to start even if recently reset
-        // Start scans 4 clocks before. Scan is between 0 and 7, each pixel = 8 scan clocks
-        if (ballCounter === 156) ballScanCounter = 7 + ballScanSpeed * 4;
-    };
-
-    var playerDelaySpriteChange = function(player, sprite) {
-        observableChange();
-        if (debug) debugPixel(player === 0 ? DEBUG_P0_GR_COLOR : DEBUG_P1_GR_COLOR);
-        if (playersDelayedSpriteChangesCount >= PLAYERS_DELAYED_SPRITE_CHANGES_MAX_COUNT) {
-            debugInfo(">>> Max player delayed changes reached: " + PLAYERS_DELAYED_SPRITE_CHANGES_MAX_COUNT);
-            return;
-        }
-        playersDelayedSpriteChanges[playersDelayedSpriteChangesCount][0] = clock;
-        playersDelayedSpriteChanges[playersDelayedSpriteChangesCount][1] = player;
-        playersDelayedSpriteChanges[playersDelayedSpriteChangesCount][2] = sprite;
-        playersDelayedSpriteChangesCount++;
-    };
-
-    var playersPerformDelayedSpriteChanges = function() {
-        if (playersDelayedSpriteChangesCount === 0 || playersDelayedSpriteChanges[0][0] === clock) return;
-        for (var i = 0; i < playersDelayedSpriteChangesCount; i++) {
-            var change = playersDelayedSpriteChanges[i];
-            if (change[1] === 0) {
-                player0DelayedSprite = change[2];
-                player1ActiveSprite = player1DelayedSprite;
-            } else {
-                player1DelayedSprite = change[2];
-                player0ActiveSprite = player0DelayedSprite;
-                ballEnabled = ballDelayedEnablement;
-            }
-        }
-        playersDelayedSpriteChangesCount = 0;
-    };
-
-    var missile0SetResetToPlayer = function(res) {
-        observableChange();
-        if (missile0ResetToPlayer = (res & 0x02) !== 0) missile0Enabled = false;
-    };
-
-    var missile1SetResetToPlayer = function(res) {
-        observableChange();
-        if (missile1ResetToPlayer = (res & 0x02) !== 0) missile1Enabled = false;
-    };
+    function vSyncSet(i) {
+        if (debug) {
+            debugPixel(VSYNC_COLOR);
+            changeAtClock();
+            vSyncOn = (i & 0x02) !== 0;
+            vBlankColor = vSyncOn ? VSYNC_COLOR : DEBUG_VBLANK_COLOR;
+        } else
+            vSyncOn = (i & 0x02) !== 0;
+    }
 
     var vBlankSet = function(blank) {
-        if (((blank & 0x02) != 0) !== vBlankOn) {	// Start the delayed decode for vBlank state change
-            vBlankDecodeActive = true;
-            vBlankNewState = !vBlankOn;
+        var v = (blank & 0x02) !== 0;
+        if (vBlankOn !== v) {
+            changeVBlankAtClockPlus1();
+            //changeAtClockPlus(1);
+            vBlankOn = v;
         }
+
         if ((blank & 0x40) !== 0) {
             controlsButtonsLatched = true;			// Enable Joystick Button latches
         } else {
@@ -833,6 +1055,7 @@ jt.Tia = function(pCpu, pPia) {
             if (controlsJOY0ButtonPressed) INPT4 &= 0x7f; else INPT4 |= 0x80;
             if (controlsJOY1ButtonPressed) INPT5 &= 0x7f; else INPT5 |= 0x80;
         }
+
         if ((blank & 0x80) != 0) {					// Ground paddle capacitors
             paddleCapacitorsGrounded = true;
             paddle0CapacitorCharge = paddle1CapacitorCharge = 0;
@@ -842,28 +1065,8 @@ jt.Tia = function(pCpu, pPia) {
             paddleCapacitorsGrounded = false;
     };
 
-    var vBlankClockDecode = function() {
-        vBlankDecodeActive = false;
-        vBlankOn = vBlankNewState;
-        if (debug) debugPixel(DEBUG_VBLANK_COLOR);
-        observableChange();
-    };
-
-    var observableChange = function() {
-        lastObservableChangeClock = clock;
-        if (repeatLastLine) repeatLastLine = false;
-    };
-
-    var checkRepeatMode = function() {
-        // If one entire line since last observable change has just completed, enter repeatLastLine mode
-        if (clock === lastObservableChangeClock) {
-            repeatLastLine = true;
-            lastObservableChangeClock = -1;
-        }
-    };
-
     var initLatchesAtPowerOn = function() {
-        CXM0P = CXM1P = CXP0FB = CXP1FB = CXM0FB = CXM1FB = CXBLPF = CXPPMM = 0;
+        collisions = 0;
         INPT0 = INPT1 = INPT2 = INPT3 = 0;
         INPT4 = INPT5 = 0x80;
     };
@@ -873,10 +1076,11 @@ jt.Tia = function(pCpu, pPia) {
     };
 
     var processDebugPixelsInLine = function() {
-        jt.Util.arrayFillSegment(linePixels, 0, HBLANK_DURATION, hBlankColor);
-        if (debugLevel >= 4 && videoSignal.monitor.currentLine() % 10 == 0) {
+        jt.Util.arrayFillSegment(linePixels, 0, HBLANK_DURATION + (hMoveHitBlank ? 8 : 0), hBlankColor);
+        // Marks
+        if (debugLevel >= 3 && videoSignal.monitor.currentLine() % 10 == 0) {
             for (var i = 0; i < LINE_WIDTH; i++) {
-                if (debugPixels[i] !== 0) continue;
+                if (debugPixels[i]) continue;
                 if (i < HBLANK_DURATION) {
                     if (i % 6 == 0 || i == 66 || i == 63)
                         debugPixels[i] = DEBUG_MARKS_COLOR;
@@ -886,15 +1090,15 @@ jt.Tia = function(pCpu, pPia) {
                 }
             }
         }
-        if (debugLevel >= 3) {
+        // Debug Pixels
+        if (debugLevel >= 2) {
             for (i = 0; i < LINE_WIDTH; i++) {
-                if (debugPixels[i] != 0) {
+                if (debugPixels[i]) {
                     linePixels[i] = debugPixels[i];
                     debugPixels[i] = 0;
                 }
             }
         }
-        observableChange();
     };
 
     var debugSetColors = function() {
@@ -903,10 +1107,10 @@ jt.Tia = function(pCpu, pPia) {
         missile0Color = DEBUG_M0_COLOR;
         missile1Color = DEBUG_M1_COLOR;
         ballColor = DEBUG_BL_COLOR;
-        playfieldColor = DEBUG_PF_COLOR;
+        playfieldColor = playfieldLeftColor = playfieldRightColor = DEBUG_PF_COLOR;
         playfieldBackground = DEBUG_BK_COLOR;
         hBlankColor = debugLevel >= 1 ? DEBUG_HBLANK_COLOR : HBLANK_COLOR;
-        vBlankColor = debugLevel >= 2 ? DEBUG_VBLANK_COLOR : VBLANK_COLOR;
+        vBlankColor = debugLevel >= 1 ? DEBUG_VBLANK_COLOR : VBLANK_COLOR;
     };
 
     var debugRestoreColors = function() {
@@ -914,12 +1118,164 @@ jt.Tia = function(pCpu, pPia) {
         vBlankColor = VBLANK_COLOR;
         playfieldBackground = palette[0];
         jt.Util.arrayFill(linePixels, hBlankColor);
-        observableChange();
+        changeAtClock();
+    };
+
+    var info = function(str) {
+        console.error("Line: " + videoSignal.monitor.currentLine() +", Pixel: " + clock + ". " + str);
     };
 
     var debugInfo = function(str) {
-        if (debug) jt.Util.log("Line: " + videoSignal.monitor.currentLine() +", Pixel: " + clock + ". " + str);
+        if (debug) console.error("Line: " + videoSignal.monitor.currentLine() +", Pixel: " + clock + ". " + str);
     };
+
+    // All possible entire line pixels for players, for all 8 bit patterns (sprites), including all variations (copies) and mirrors
+    function generateObjectsLineSprites() {
+        // Players
+        var line = new Uint8Array(160);
+        for (var mirror = 0; mirror <= 1; ++mirror) {
+            for (var pattern = 0; pattern < 256; ++pattern) {
+                var sprite = !mirror ? jt.Util.reverseInt8(pattern) : pattern;
+                // 1 copy
+                paintSprite(line, sprite, 4 + 1); addPlayerSprite(mirror, pattern, 0, 0, line);                   // 4 + 1 means player is delayed 4 + 1 pixels
+                // 2 copies close
+                paintSprite(line, sprite, 4 + 16 + 1); addPlayerSprite(mirror, pattern, 1, 0, line);
+                // 3 copies close
+                paintSprite(line, sprite, 4 + 32 + 1); addPlayerSprite(mirror, pattern, 3, 0, line);
+                // 2 copies medium
+                paintSprite(line, 0, 4 + 16 + 1); addPlayerSprite(mirror, pattern, 2, 0, line);                   // erase close copy
+                // 3 copies medium
+                paintSprite(line, sprite, 4 + 64 + 1); addPlayerSprite(mirror, pattern, 6, 0, line);
+                // 2 copies wide
+                paintSprite(line, 0, 4 + 32 + 1); addPlayerSprite(mirror, pattern, 4, 0, line);                   // erase medium copy
+                // 1 copy double
+                paintSprite(line, 0, 4 + 64 + 1); line[4 + 1] = 0;                                                // erase wide copy and first pixel
+                paintSpriteDouble(line, sprite, 4 + 1 + 1); addPlayerSprite(mirror, pattern, 5, 0, line);         // 4 + 1 + 1 means Double and Quad are delayed 1 extra pixel
+                // 1 copy quad
+                paintSpriteQuad(line, sprite, 4 + 1 + 1); addPlayerSprite(mirror, pattern, 7, 0, line);
+                // empty line
+                paintSpriteQuad(line, 0, 4 + 1 + 1);
+            }
+        }
+
+        // Missiles & Ball
+        jt.Util.arrayFill(line, 0);
+        for (var size = 0; size < 4; ++size) {
+            sprite = (1 << (1 << size)) - 1;
+            // 1 copy
+            paintSprite(line, sprite, 4);                                                                         // 4 means missile/ball is delayed 4 pixels
+            addMissileBallSprite(size, 0, 0, line);
+            addMissileBallSprite(size, 5, 0, line);
+            addMissileBallSprite(size, 7, 0, line);
+            // 2 copies close
+            paintSprite(line, sprite, 4 + 16); addMissileBallSprite(size, 1, 0, line);
+            // 3 copies close
+            paintSprite(line, sprite, 4 + 32); addMissileBallSprite(size, 3, 0, line);
+            // 2 copies medium
+            paintSprite(line, 0, 4 + 16); addMissileBallSprite(size, 2, 0, line);                                 // erase close copy
+            // 3 copies medium
+            paintSprite(line, sprite, 4 + 64); addMissileBallSprite(size, 6, 0, line);
+            // 2 copies wide
+            paintSprite(line, 0, 4 + 32); addMissileBallSprite(size, 4, 0, line);                                 // erase medium copy
+            paintSprite(line, 0, 4);                                                                              // clean line: erase first and wide copy
+            paintSprite(line, 0, 4 + 64);
+        }
+
+        function paintSprite(line, pat, pos) {
+            for (var b = 0; b < 8; ++b) line[pos + b] = (pat >> b) & 1;
+        }
+        function paintSpriteDouble(line, pat, pos) {
+            for (var b = 0; b < 8; ++b) line[pos + b*2] = line[pos + b*2 + 1] = (pat >> b) & 1;
+        }
+        function paintSpriteQuad(line, pat, pos) {
+            for (var b = 0; b < 8; ++b) line[pos + b*4] = line[pos + b*4 + 1] = line[pos + b*4 + 2] = line[pos + b*4 + 3] = (pat >> b) & 1;
+        }
+        function addPlayerSprite(mirror, pattern, vari, alt, line) {
+            var pos = (((mirror << 11) | (pattern << 3) | vari) << 6) + alt * 20;
+            for (var i = 0; i < 20; ++i)
+                for (var b = 0; b < 8; ++b)
+                    if (line[i * 8 + b]) playerLineSprites[pos + i] |= 1 << b;
+
+        }
+        function addMissileBallSprite(size, vari, alt, line) {
+            var pos = (((size << 3) | vari) << 6) + alt * 20;
+            for (var i = 0; i < 20; ++i)
+                for (var b = 0; b < 8; ++b)
+                    if (line[i * 8 + b]) missileBallLineSprites[pos + i] |= 1 << b;
+
+        }
+    }
+
+    function generateObjectsCopiesOffsets() {
+        var delays = new Uint8Array(40);
+        delays[0] = 0; delays[1] = 1; delays[2] = 2; delays[3] = 3;
+
+        // Players
+        jt.Util.arrayFill(playerCopyOffsetsReset, 0x80);
+        jt.Util.arrayFill(playerScanOffsetsShape, 0x80);
+        // Normal Variations
+        for (var p = 0; p < 13; ++p) {
+            // Apply delays for Reset start signal
+            var v = p - delays[p];
+            playerCopyOffsetsReset[0*160 + p] = v;
+            playerCopyOffsetsReset[1*160 + p] = v;  playerCopyOffsetsReset[1*160 + p + 16] = v;
+            playerCopyOffsetsReset[2*160 + p] = v;  playerCopyOffsetsReset[2*160 + p + 32] = v;
+            playerCopyOffsetsReset[3*160 + p] = v;  playerCopyOffsetsReset[3*160 + p + 16] = v; playerCopyOffsetsReset[3*160 + p + 32] = v;
+            playerCopyOffsetsReset[4*160 + p] = v;  playerCopyOffsetsReset[4*160 + p + 64] = v;
+            playerCopyOffsetsReset[6*160 + p] = v;  playerCopyOffsetsReset[6*160 + p + 32] = v; playerCopyOffsetsReset[6*160 + p + 64] = v;
+            // Start signal and pixel scan info
+            v = p < 5 ? p | 0x40 : p - 5;
+            playerScanOffsetsShape[0*160 + p] = v;
+            playerScanOffsetsShape[1*160 + p] = v;  playerScanOffsetsShape[1*160 + p + 16] = v;
+            playerScanOffsetsShape[2*160 + p] = v;  playerScanOffsetsShape[2*160 + p + 32] = v;
+            playerScanOffsetsShape[3*160 + p] = v;  playerScanOffsetsShape[3*160 + p + 16] = v; playerScanOffsetsShape[3*160 + p + 32] = v;
+            playerScanOffsetsShape[4*160 + p] = v;  playerScanOffsetsShape[4*160 + p + 64] = v;
+            playerScanOffsetsShape[6*160 + p] = v;  playerScanOffsetsShape[6*160 + p + 32] = v; playerScanOffsetsShape[6*160 + p + 64] = v;
+        }
+
+        // Double Variation
+        for (p = 0; p < 22; p++) {
+            v = p - delays[p];
+            playerCopyOffsetsReset[5 * 160 + p] = v;
+            v = p < 6 ? p | 0x40 : (p - 6) >> 1;
+            playerScanOffsetsShape[5 * 160 + p] = v;
+        }
+        // Quad Variation
+        for (p = 0; p < 38; p++) {
+            v = p - delays[p];
+            playerCopyOffsetsReset[7 * 160 + p] = v;
+            v = p < 6 ? p | 0x40 : (p - 6) >> 2;
+            playerScanOffsetsShape[7 * 160 + p] = v;
+        }
+
+        // Missiles
+        jt.Util.arrayFill(missileCopyOffsetsReset, 0x80);
+        jt.Util.arrayFill(missileScanOffsetsShape, 0x80);
+        // All Size * Variations
+        for (var s = 0; s <= 3; ++s) {
+            var d = 4 + (1 << s);
+            for (p = 0; p < d; ++p) {
+                v = p - delays[p];
+                missileCopyOffsetsReset[s*8*160 + 0*160 + p] = v;
+                missileCopyOffsetsReset[s*8*160 + 1*160 + p] = v;  missileCopyOffsetsReset[s*8 + 1*160 + p + 16] = v;
+                missileCopyOffsetsReset[s*8*160 + 2*160 + p] = v;  missileCopyOffsetsReset[s*8 + 2*160 + p + 32] = v;
+                missileCopyOffsetsReset[s*8*160 + 3*160 + p] = v;  missileCopyOffsetsReset[s*8 + 3*160 + p + 16] = v; missileCopyOffsetsReset[s*8*160 + 3*160 + p + 32] = v;
+                missileCopyOffsetsReset[s*8*160 + 4*160 + p] = v;  missileCopyOffsetsReset[s*8 + 4*160 + p + 64] = v;
+                missileCopyOffsetsReset[s*8*160 + 5*160 + p] = v;
+                missileCopyOffsetsReset[s*8*160 + 6*160 + p] = v;  missileCopyOffsetsReset[s*8 + 6*160 + p + 32] = v; missileCopyOffsetsReset[s*8*160 + 6*160 + p + 64] = v;
+                missileCopyOffsetsReset[s*8*160 + 7*160 + p] = v;
+                v = p < 4 ? p | 0x40 : (p - 4) >> s;
+                missileScanOffsetsShape[s*8*160 + 0*160 + p] = v;
+                missileScanOffsetsShape[s*8*160 + 1*160 + p] = v;  missileScanOffsetsShape[s*8 + 1*160 + p + 16] = v;
+                missileScanOffsetsShape[s*8*160 + 2*160 + p] = v;  missileScanOffsetsShape[s*8 + 2*160 + p + 32] = v;
+                missileScanOffsetsShape[s*8*160 + 3*160 + p] = v;  missileScanOffsetsShape[s*8 + 3*160 + p + 16] = v; missileScanOffsetsShape[s*8*160 + 3*160 + p + 32] = v;
+                missileScanOffsetsShape[s*8*160 + 4*160 + p] = v;  missileScanOffsetsShape[s*8 + 4*160 + p + 64] = v;
+                missileScanOffsetsShape[s*8*160 + 5*160 + p] = v;
+                missileScanOffsetsShape[s*8*160 + 6*160 + p] = v;  missileScanOffsetsShape[s*8 + 6*160 + p + 32] = v; missileScanOffsetsShape[s*8*160 + 6*160 + p + 64] = v;
+                missileScanOffsetsShape[s*8*160 + 7*160 + p] = v;
+            }
+        }
+    }
 
 
     // Controls interface  -----------------------------------
@@ -954,19 +1310,11 @@ jt.Tia = function(pCpu, pPia) {
         switch (control) {
             case controls.DEBUG:
                 self.debug(debugLevel + 1); return;
+            case controls.SHOW_INFO:
+                videoSignal.toggleShowInfo(); return;
             case controls.NO_COLLISIONS:
                 debugNoCollisions = !debugNoCollisions;
-                videoSignal.showOSD(debugNoCollisions ? "Collisions OFF" : "Collisions ON", true);
-                return;
-            case controls.PAUSE:
-                debugPause = !debugPause; debugPauseMoreFrames = 1;
-                videoSignal.showOSD(debugPause ? "PAUSE" : "RESUME", true);
-                return;
-            case controls.FRAME:
-                if (debugPause) debugPauseMoreFrames = 1;
-                return;
-            case controls.TRACE:
-                cpu.trace = !cpu.trace; return;
+                videoSignal.showOSD(debugNoCollisions ? "No Collisions: ON" : "No Collisions: OFF", true);
         }
     };
 
@@ -979,223 +1327,226 @@ jt.Tia = function(pCpu, pPia) {
         }
     };
 
-    this.controlsStateReport = function(report) {
-        //  No TIA controls visible outside by now
-    };
-
 
     // Savestate  ------------------------------------------------
 
     this.saveState = function() {
         return {
-            lp:     btoa(jt.Util.uInt32ArrayToByteString(linePixels)),
-            lo:     lastObservableChangeClock,
-            oc:     observableChangeExtended | 0,
-            rl:     repeatLastLine | 0,
-            vs:     vSyncOn | 0,
-            vb:     vBlankOn | 0,
-            vbd:    vBlankDecodeActive | 0,
-            vbn:    vBlankNewState | 0,
-            f:      jt.Util.booleanArrayToByteString(playfieldPattern),
-            fi:     playfieldPatternInvalid | 0,
-            fp:     playfieldCurrentPixel | 0,
-            fc:     playfieldColor,
-            fb:     playfieldBackground,
-            fr:     playfieldReflected | 0,
-            fs:     playfieldScoreMode | 0,
-            ft:     playfieldPriority | 0,
-            p0:     player0ActiveSprite,
-            p0d:    player0DelayedSprite,
-            p0c:    player0Color,
-            p0rr:   player0RecentReset | 0,
-            p0co:   player0Counter,
-            p0sc:   player0ScanCounter,
-            p0ss:   player0ScanSpeed,
-            p0v:    player0VerticalDelay | 0,
-            p0cc:   player0CloseCopy | 0,
-            p0mc:   player0MediumCopy | 0,
-            p0wc:   player0WideCopy | 0,
-            p0r:    player0Reflected | 0,
-            p1:     player1ActiveSprite,
-            p1d:    player1DelayedSprite,
-            p1c:    player1Color,
-            p1rr:   player1RecentReset | 0,
-            p1co:   player1Counter,
-            p1sc:   player1ScanCounter,
-            p1ss:   player1ScanSpeed,
-            p1v:    player1VerticalDelay | 0,
-            p1cc:   player1CloseCopy | 0,
-            p1mc:   player1MediumCopy | 0,
-            p1wc:   player1WideCopy | 0,
-            p1r:    player1Reflected | 0,
-            m0:     missile0Enabled | 0,
-            m0c:    missile0Color,
-            m0rr:   missile0RecentReset | 0,
-            m0co:   missile0Counter,
-            m0sc:   missile0ScanCounter,
-            m0ss:   missile0ScanSpeed,
-            m0r:    missile0ResetToPlayer | 0,
-            m1:     missile1Enabled | 0,
-            m1c:    missile1Color,
-            m1rr:   missile1RecentReset | 0,
-            m1co:   missile1Counter,
-            m1sc:   missile1ScanCounter,
-            m1ss:   missile1ScanSpeed,
-            m1r:    missile1ResetToPlayer | 0,
-            b:      ballEnabled | 0,
-            bd:     ballDelayedEnablement | 0,
-            bc:     ballColor,
-            bco:    ballCounter,
-            bsc:    ballScanCounter,
-            bss:    ballScanSpeed,
-            bv:     ballVerticalDelay | 0,
-            fd:     playfieldDelayedChangeClock,
-            fdc:    playfieldDelayedChangePart,
-            fdp:    playfieldDelayedChangePattern,
-            pds:    btoa(jt.Util.uInt8BiArrayToByteString(playersDelayedSpriteChanges)),
-            pdc:    playersDelayedSpriteChangesCount,
-            hb:     hMoveHitBlank | 0,
-            hc:     hMoveHitClock,
-            PF0:    PF0,
-            PF1:    PF1,
-            PF2:    PF2,
-            AC0:    AUDC0,
-            AC1:    AUDC1,
-            AF0:    AUDF0,
-            AF1:    AUDF1,
-            AV0:    AUDV0,
-            AV1:    AUDV1,
-            HP0:    HMP0,
-            HP1:    HMP1,
-            HM0:    HMM0,
-            HM1:    HMM1,
-            HB:     HMBL,
-            XM0P:   CXM0P,
-            XM1P:   CXM1P,
-            XP0F:   CXP0FB,
-            XP1F:   CXP1FB,
-            XM0F:   CXM0FB,
-            XM1F:   CXM1FB,
-            XBP:    CXBLPF,
-            XPM:    CXPPMM
+            ccp: changeClockPrevLine,
+            lpx: jt.Util.storeInt32BitArrayToStringBase64(linePixels),
+
+            vs: vSyncOn,
+            vb: vBlankOn,
+
+            pfe: playfieldEnabled,
+            pfl: playfieldPatternL,
+            pfr: playfieldPatternR,
+            pfc: playfieldColor,
+            pflc: playfieldLeftColor,
+            pfrc: playfieldRightColor,
+            pfb: playfieldBackground,
+            pfrl: playfieldReflected,
+            pfsc: playfieldScoreMode,
+            pfp: playfieldPriority,
+
+            be: ballEnabled,
+            bx: ballPixel,
+            blp: ballLineSpritePointer,
+            bc: ballColor,
+
+            p0e: player0Enabled,
+            p0x: player0Pixel,
+            p0lp: player0LineSpritePointer,
+            p0a: player0Alt,
+            p0af: player0AltFrom,
+            p0al: player0AltLength,
+            p0ao: player0AltCopyOffset,
+            p0c: player0Color,
+
+            p1e: player1Enabled,
+            p1x: player1Pixel,
+            p1lp: player1LineSpritePointer,
+            p1a: player1Alt,
+            p1af: player1AltFrom,
+            p1al: player1AltLength,
+            p1ao: player1AltCopyOffset,
+            p1c: player1Color,
+
+            m0e: missile0Enabled,
+            m0x: missile0Pixel,
+            m0lp: missile0LineSpritePointer,
+            m0a: missile0Alt,
+            m0af: missile0AltFrom,
+            m0al: missile0AltLength,
+            m0ao: missile0AltCopyOffset,
+            m0c: missile0Color,
+
+            m1e: missile1Enabled,
+            m1x: missile1Pixel,
+            m1lp: missile1LineSpritePointer,
+            m1a: missile1Alt,
+            m1af: missile1AltFrom,
+            m1al: missile1AltLength,
+            m1ao: missile1AltCopyOffset,
+            m1c: missile1Color,
+
+            hmh: hMoveHitBlank,
+            hmc: hMoveHitClock,
+            hmlh: hMoveLateHit,
+            hmlb: hMoveLateHitBlank,
+
+            co: collisions,
+            cop: collisionsPossible,
+
+            CTRLPF: CTRLPF,
+            COLUPF: COLUPF,
+            COLUBK: COLUBK,
+            PF0: PF0,
+            PF1: PF1,
+            PF2: PF2,
+            ENABL: ENABL,
+            ENABLd: ENABLd,
+            VDELBL: VDELBL,
+            NUSIZ0: NUSIZ0,
+            COLUP0: COLUP0,
+            REFP0: REFP0,
+            GRP0: GRP0,
+            GRP0d: GRP0d,
+            VDELP0: VDELP0,
+            NUSIZ1: NUSIZ1,
+            COLUP1: COLUP1,
+            REFP1: REFP1,
+            GRP1: GRP1,
+            GRP1d: GRP1d,
+            VDELP1: VDELP1,
+            ENAM0: ENAM0,
+            RESMP0: RESMP0,
+            ENAM1: ENAM1,
+            RESMP1: RESMP1,
+            HMP0: HMP0,
+            HMP1: HMP1,
+            HMM0: HMM0,
+            HMM1: HMM1,
+            HMBL: HMBL,
+            AUDC0: AUDC0,
+            AUDC1: AUDC1,
+            AUDF0: AUDF0,
+            AUDF1: AUDF1,
+            AUDV0: AUDV0,
+            AUDV1: AUDV1
         };
     };
 
-    this.loadState = function(state) {
-        linePixels						 =  jt.Util.byteStringToUInt32Array(atob(state.lp));
-        lastObservableChangeClock		 =	state.lo;
-        observableChangeExtended		 =  !!state.oc;
-        repeatLastLine 					 =	!!state.rl;
-        vSyncOn                     	 =  !!state.vs;
-        vBlankOn                    	 =  !!state.vb;
-        vBlankDecodeActive				 =  !!state.vbd;
-        vBlankNewState				 	 =  !!state.vbn;
-        playfieldPattern            	 =  jt.Util.byteStringToBooleanArray(state.f);
-        playfieldPatternInvalid     	 =  !!state.fi;
-        playfieldCurrentPixel       	 =  !!state.fp;
-        playfieldColor              	 =  state.fc;
-        playfieldBackground         	 =  state.fb;
-        playfieldReflected          	 =  !!state.fr;
-        playfieldScoreMode          	 =  !!state.fs;
-        playfieldPriority           	 =  !!state.ft;
-        player0ActiveSprite         	 =  state.p0;
-        player0DelayedSprite        	 =  state.p0d;
-        player0Color                	 =  state.p0c;
-        player0RecentReset       	 	 =  !!state.p0rr;
-        player0Counter	            	 =  state.p0co;
-        player0ScanCounter	        	 =  state.p0sc;
-        player0ScanSpeed            	 =  state.p0ss;
-        player0VerticalDelay        	 =  !!state.p0v;
-        player0CloseCopy            	 =  !!state.p0cc;
-        player0MediumCopy           	 =  !!state.p0mc;
-        player0WideCopy             	 =  !!state.p0wc;
-        player0Reflected            	 =  !!state.p0r;
-        player1ActiveSprite         	 =  state.p1;
-        player1DelayedSprite        	 =  state.p1d;
-        player1Color                	 =  state.p1c;
-        player1RecentReset       		 =  !!state.p1rr;
-        player1Counter              	 =  state.p1co;
-        player1ScanCounter				 =  state.p1sc;
-        player1ScanSpeed				 =  state.p1ss;
-        player1VerticalDelay        	 =  !!state.p1v;
-        player1CloseCopy            	 =  !!state.p1cc;
-        player1MediumCopy           	 =  !!state.p1mc;
-        player1WideCopy             	 =  !!state.p1wc;
-        player1Reflected            	 =  !!state.p1r;
-        missile0Enabled             	 =  !!state.m0;
-        missile0Color               	 =  state.m0c;
-        missile0RecentReset      	 	 =  !!state.m0rr;
-        missile0Counter             	 =  state.m0co;
-        missile0ScanCounter         	 =  state.m0sc;
-        missile0ScanSpeed				 =  state.m0ss;
-        missile0ResetToPlayer			 =  !!state.m0r;
-        missile1Enabled             	 =  !!state.m1;
-        missile1Color               	 =  state.m1c;
-        missile1RecentReset      	 	 =  !!state.m1rr;
-        missile1Counter             	 =  state.m1co;
-        missile1ScanCounter         	 =  state.m1sc;
-        missile1ScanSpeed				 =  state.m1ss;
-        missile1ResetToPlayer			 =  !!state.m1r;
-        ballEnabled                 	 =  !!state.b;
-        ballDelayedEnablement       	 =  !!state.bd;
-        ballColor                   	 =  state.bc;
-        ballCounter                 	 =  state.bco;
-        ballScanCounter             	 =  state.bsc;
-        ballScanSpeed					 =  state.bss;
-        ballVerticalDelay           	 =  !!state.bv;
-        playfieldDelayedChangeClock		 =  state.fd;
-        playfieldDelayedChangePart		 =  state.fdc;
-        playfieldDelayedChangePattern	 =  state.fdp;
-        playersDelayedSpriteChanges      =  jt.Util.byteStringToUInt8BiArray(atob(state.pds), 3);
-        playersDelayedSpriteChangesCount =  state.pdc;
-        hMoveHitBlank					 =  !!state.hb;
-        hMoveHitClock					 =  state.hc;
-        PF0								 =  state.PF0;
-        PF1								 =  state.PF1;
-        PF2								 =  state.PF2;
-        AUDC0							 =  state.AC0; audioSignal.getChannel0().setControl(AUDC0 & 0x0f);		// Also update the Audio Generator
-        AUDC1							 =  state.AC1; audioSignal.getChannel1().setControl(AUDC1 & 0x0f);
-        AUDF0							 =  state.AF0; audioSignal.getChannel0().setDivider((AUDF0 & 0x1f) + 1);
-        AUDF1							 =  state.AF1; audioSignal.getChannel1().setDivider((AUDF1 & 0x1f) + 1);
-        AUDV0							 =  state.AV0; audioSignal.getChannel0().setVolume(AUDV0 & 0x0f);
-        AUDV1							 =  state.AV1; audioSignal.getChannel1().setVolume(AUDV1 & 0x0f);
-        HMP0							 =  state.HP0;
-        HMP1							 =  state.HP1;
-        HMM0							 =  state.HM0;
-        HMM1							 =  state.HM1;
-        HMBL							 =  state.HB;
-        CXM0P 							 =  state.XM0P;
-        CXM1P 							 =  state.XM1P;
-        CXP0FB							 =  state.XP0F;
-        CXP1FB							 =  state.XP1F;
-        CXM0FB							 =  state.XM0F;
-        CXM1FB							 =  state.XM1F;
-        CXBLPF							 =  state.XBP;
-        CXPPMM							 =  state.XPM;
+    this.loadState = function(s) {
+        changeClockPrevLine = s.ccp;
+        jt.Util.restoreStringBase64ToInt32BitArray(s.lpx, linePixels);
+
+        vSyncOn = s.vs;
+        vBlankOn = s.vb;
+
+        playfieldEnabled = s.pfe;
+        playfieldPatternL = s.pfl | 0;
+        playfieldPatternR = s.pfr | 0;
+        playfieldColor = s.pfc | 0;
+        playfieldLeftColor = s.pflc | 0;
+        playfieldRightColor = s.pfrc | 0;
+        playfieldBackground = s.pfb | 0;
+        playfieldReflected = s.pfrl;
+        playfieldScoreMode = s.pfsc;
+        playfieldPriority = s.pfp;
+
+        ballEnabled = s.be;
+        ballPixel = s.bx | 0;
+        ballLineSpritePointer = s.blp | 0;
+        ballColor = s.bc | 0;
+
+        player0Enabled = s.p0e;
+        player0Pixel = s.p0x | 0;
+        player0LineSpritePointer = s.p0lp | 0;
+        player0Alt = s.p0a | 0;
+        player0AltFrom = s.p0af | 0;
+        player0AltLength = s.p0al | 0;
+        player0AltCopyOffset = s.p0ao | 0;
+        jt.Util.arrayFill(player0AltControl, 0);
+        player0Color = s.p0c | 0;
+
+        player1Enabled = s.p1e;
+        player1Pixel = s.p1x | 0;
+        player1LineSpritePointer = s.p1lp | 0;
+        player1Alt = s.p1a | 0;
+        player1AltFrom = s.p1af | 0;
+        player1AltLength = s.p1al | 0;
+        player1AltCopyOffset = s.p1ao | 0;
+        jt.Util.arrayFill(player1AltControl, 0);
+        player1Color = s.p1c | 0;
+
+        missile0Enabled = s.m0e;
+        missile0Pixel = s.m0x | 0;
+        missile0LineSpritePointer = s.m0lp | 0;
+        missile0Alt = s.m0a | 0;
+        missile0AltFrom = s.m0af | 0;
+        missile0AltLength = s.m0al | 0;
+        missile0AltCopyOffset = s.m0ao | 0;
+        jt.Util.arrayFill(missile0AltControl, 0);
+        missile0Color = s.m0c | 0;
+
+        missile1Enabled = s.m1e;
+        missile1Pixel = s.m1x | 0;
+        missile1LineSpritePointer = s.m1lp | 0;
+        missile1Alt = s.m1a | 0;
+        missile1AltFrom = s.m1af | 0;
+        missile1AltLength = s.m1al | 0;
+        missile1AltCopyOffset = s.m1ao | 0;
+        jt.Util.arrayFill(missile1AltControl, 0);
+        missile1Color = s.m1c | 0;
+
+        hMoveHitBlank = s.hmh;
+        hMoveHitClock = s.hmc | 0;
+        hMoveLateHit = s.hmlh;
+        hMoveLateHitBlank = s.hmlb;
+
+        collisions = s.co | 0;
+        collisionsPossible = s.cop | 0;
+
+        CTRLPF = s.CTRLPF | 0;
+        COLUPF = s.COLUPF | 0;
+        COLUBK = s.COLUBK | 0;
+        PF0 = s.PF0 | 0;
+        PF1 = s.PF1 | 0;
+        PF2 = s.PF2 | 0;
+        ENABL = s.ENABL | 0;
+        ENABLd = s.ENABLd | 0;
+        VDELBL = s.VDELBL | 0;
+        NUSIZ0 = s.NUSIZ0 | 0;
+        COLUP0 = s.COLUP0 | 0;
+        REFP0 = s.REFP0 | 0;
+        GRP0 = s.GRP0 | 0;
+        GRP0d = s.GRP0d | 0;
+        VDELP0 = s.VDELP0 | 0;
+        NUSIZ1 = s.NUSIZ1 | 0;
+        COLUP1 = s.COLUP1 | 0;
+        REFP1 = s.REFP1 | 0;
+        GRP1 = s.GRP1 | 0;
+        GRP1d = s.GRP1d | 0;
+        VDELP1 = s.VDELP1 | 0;
+        ENAM0 = s.ENAM0 | 0;
+        RESMP0 = s.RESMP0 | 0;
+        ENAM1 = s.ENAM1 | 0;
+        RESMP1 = s.RESMP1 | 0;
+        HMP0 = s.HMP0 | 0;
+        HMP1 = s.HMP1 | 0;
+        HMM0 = s.HMM0 | 0;
+        HMM1 = s.HMM1 | 0;
+        HMBL = s.HMBL | 0;
+        AUDC0 = s.AUDC0 | 0; audioSignal.getChannel0().setControl(AUDC0 & 0x0f);		// Also update the Audio Generator
+        AUDC1 = s.AUDC1 | 0; audioSignal.getChannel1().setControl(AUDC1 & 0x0f);
+        AUDF0 = s.AUDF0 | 0; audioSignal.getChannel0().setDivider((AUDF0 & 0x1f) + 1);
+        AUDF1 = s.AUDF1 | 0; audioSignal.getChannel1().setDivider((AUDF1 & 0x1f) + 1);
+        AUDV0 = s.AUDV0 | 0; audioSignal.getChannel0().setVolume(AUDV0 & 0x0f);
+        AUDV1 = s.AUDV1 | 0; audioSignal.getChannel1().setVolume(AUDV1 & 0x0f);
+
         if (debug) debugSetColors();						// IF debug is on, ensure debug colors are used
     };
-
-    this.saveControlsState = function() {
-        return {
-            P0btn:  controlsJOY0ButtonPressed,
-            P1btn:  controlsJOY1ButtonPressed,
-            Pground: paddleCapacitorsGrounded,
-            P0pos:  paddle0Position,
-            P0chg:  paddle0CapacitorCharge,
-            P1pos:  paddle1Position,
-            P1chg:  paddle1CapacitorCharge,
-        }
-    }
-
-    this.loadControlsState = function(state) {
-        controlsJOY0ButtonPressed = state.P0btn;
-        controlsJOY1ButtonPressed = state.P1btn;
-        paddleCapacitorsGrounded = state.Pground;
-        paddle0Position = state.P0pos;
-        paddle0CapacitorCharge = state.P0chg;
-        paddle1Position = state.P1pos;
-        paddle1CapacitorCharge = state.P1chg;
-    }
 
 
     // Constants  ------------------------------------------------
@@ -1203,10 +1554,8 @@ jt.Tia = function(pCpu, pPia) {
     var HBLANK_DURATION = 68;
     var LINE_WIDTH = 228;
 
-    var PLAYERS_DELAYED_SPRITE_CHANGES_MAX_COUNT = 50;  // Supports a maximum of player GR changes before any is drawn
-
-    var VBLANK_COLOR = 0xff000000;		// Full transparency needed for CRT emulation modes
-    var HBLANK_COLOR = 0xff000000;
+    var VBLANK_COLOR = 0xff000000;		// CHECK: Full transparency needed for CRT emulation modes
+    var HBLANK_COLOR = 0xfe000000;      // Alpha of 0xfe used to detect extended HBLANK (alpha is unnoticeable)
     var VSYNC_COLOR  = 0xffdddddd;
 
     var DEBUG_P0_COLOR     = 0xff0000ff;
@@ -1226,9 +1575,19 @@ jt.Tia = function(pCpu, pPia) {
     var DEBUG_VBLANK_COLOR = 0xff2a2a2a;
     var DEBUG_WSYNC_COLOR  = 0xff880088;
     var DEBUG_HMOVE_COLOR  = 0xffffffff;
+    var DEBUG_ALT_COLOR    = 0xffaaaa00;
 
     var READ_ADDRESS_MASK  = 0x000f;
     var WRITE_ADDRESS_MASK = 0x003f;
+
+    // Collision bit patterns:   P0P1, P0M0, P0M1, P0PF,   P0BL, P1M0, P1M1, P1PF,   P1BL, M0M1, M0PF, M0BL,   M1PF, M1BL, PFBL, none
+
+    var P0C = ~0xf800;   //  1111 1000 0000 0000
+    var P1C = ~0x8780;   //  1000 0111 1000 0000
+    var M0C = ~0x4470;   //  0100 0100 0111 0000
+    var M1C = ~0x224c;   //  0010 0010 0100 1100
+    var PFC = ~0x112a;   //  0001 0001 0010 1010
+    var BLC = ~0x0896;   //  0000 1000 1001 0110
 
 
     // Variables  ---------------------------------------------------
@@ -1239,127 +1598,92 @@ jt.Tia = function(pCpu, pPia) {
 
     var powerOn = false;
 
-    var clock;
-    var linePixels = jt.Util.arrayFill(new Array(LINE_WIDTH), 0);
+    var clock, changeClock, changeClockPrevLine, renderClock;
+    var linePixels = new Uint32Array(LINE_WIDTH);
 
     var vSyncOn = false;
     var vBlankOn = false;
-    var vBlankDecodeActive = false;
-    var vBlankNewState;
+    var vBlankColor = VBLANK_COLOR;
+    var hBlankColor = HBLANK_COLOR;
 
-    var playfieldPattern = jt.Util.arrayFill(new Array(40), false);
-    var playfieldPatternInvalid = true;
-    var playfieldCurrentPixel = false;
-    var playfieldColor = 0xff000000;
+    var playfieldEnabled = false, playfieldPatternL = 0, playfieldPatternR = 0;
+    var playfieldColor = 0xff000000, playfieldLeftColor = 0xff000000, playfieldRightColor = 0xff000000;
     var playfieldBackground = 0xff000000;
     var playfieldReflected = false;
     var playfieldScoreMode = false;
     var playfieldPriority = false;
-    var playfieldDelayedChangeClock = -1;
-    var playfieldDelayedChangePart = -1;			// Supports only one delayed change at a time.
-    var playfieldDelayedChangePattern = -1;
 
-    var player0ActiveSprite = 0;
-    var player0DelayedSprite = 0;
-    var player0Color = 0xff000000;
-    var player0RecentReset = false;
-    var player0Counter = 0;							// Position!
-    var player0ScanCounter = -1;					// 31 down to 0. Current scan position. Negative = scan not happening
-    var player0ScanSpeed = 4;						// Decrement ScanCounter. 4 per clock = 1 pixel wide
-    var player0VerticalDelay = false;
-    var player0CloseCopy = false;
-    var player0MediumCopy = false;
-    var player0WideCopy = false;
-    var player0Reflected = false;
-
-    var player1ActiveSprite = 0;
-    var player1DelayedSprite = 0;
-    var player1Color = 0xff000000;
-    var player1RecentReset = false;
-    var player1Counter = 0;
-    var player1ScanCounter = -1;
-    var player1ScanSpeed = 4;
-    var player1VerticalDelay = false;
-    var player1CloseCopy = false;
-    var player1MediumCopy = false;
-    var player1WideCopy = false;
-    var player1Reflected = false;
-
-    var missile0Enabled = false;
-    var missile0Color = 0xff000000;
-    var missile0RecentReset = false;
-    var missile0Counter = 0;
-    var missile0ScanCounter = -1;
-    var missile0ScanSpeed = 8;						// 8 per clock = 1 pixel wide
-    var missile0ResetToPlayer = false;
-
-    var missile1Enabled = false;
-    var missile1Color = 0xff000000;
-    var missile1RecentReset = false;
-    var missile1Counter = 0;
-    var missile1ScanCounter = -1;
-    var missile1ScanSpeed = 8;
-    var missile1ResetToPlayer = false;
-
-    var ballEnabled = false;
-    var ballDelayedEnablement = false;
+    var ballEnabled = false, ballPixel = 0, ballLineSpritePointer = 0;
     var ballColor = 0xff000000;
-    var ballCounter = 0;
-    var ballScanCounter = -1;
-    var ballScanSpeed = 8;							// 8 per clock = 1 pixel wide
-    var ballVerticalDelay = false;
 
-    var playersDelayedSpriteChanges = jt.Util.arrayFillWithArrayClone(new Array(PLAYERS_DELAYED_SPRITE_CHANGES_MAX_COUNT), [0, 0, 0]);
-    var playersDelayedSpriteChangesCount = 0;
+    var player0Enabled = false, player0Pixel = 0, player0LineSpritePointer = 0;
+    var player0Alt = 0, player0AltFrom = 0, player0AltLength = 0, player0AltCopyOffset = 0;
+    var player0AltControl = new Uint32Array(2 * 256 * 8);
+    var player0Color = 0xff000000;
+
+    var player1Enabled = false, player1Pixel = 0, player1LineSpritePointer = 0;
+    var player1Alt = 0, player1AltFrom = 0, player1AltLength = 0, player1AltCopyOffset = 0;
+    var player1AltControl = new Uint32Array(2 * 256 * 8);
+    var player1Color = 0xff000000;
+
+    var missile0Enabled = false, missile0Pixel = 0, missile0LineSpritePointer = 0;
+    var missile0Alt = 0, missile0AltFrom = 0, missile0AltLength = 0, missile0AltCopyOffset = 0;
+    var missile0AltControl = new Uint32Array(4 * 8);
+    var missile0Color = 0xff000000;
+
+    var missile1Enabled = false, missile1Pixel = 0, missile1LineSpritePointer = 0;
+    var missile1Alt = 0, missile1AltFrom = 0, missile1AltLength = 0, missile1AltCopyOffset = 0;
+    var missile1AltControl = new Uint32Array(4 * 8);
+    var missile1Color = 0xff000000;
 
     var hMoveHitBlank = false;
-    var hMoveHitClock = -1;
+    var hMoveHitClock = 0;
     var hMoveLateHit = false;
     var hMoveLateHitBlank = false;
+
+    var collisions = 0, collisionsPossible = 0;
 
     var debug = false;
     var debugLevel = 0;
     var debugNoCollisions = false;
-    var debugPixels = jt.Util.arrayFill(new Array(LINE_WIDTH), 0);
-    var debugPause = false;
-    var debugPauseMoreFrames = 0;
-    var debugCondition = null;
-    var debugScanOverflow = true;
-
-    var vSyncColor = VSYNC_COLOR;
-    var vBlankColor = VBLANK_COLOR;
-    var hBlankColor = VBLANK_COLOR;
-
-    var repeatLastLine = false;
-    var lastObservableChangeClock = -1;
-    var observableChangeExtended = false;
+    var debugPixels = new Uint32Array(LINE_WIDTH);
 
     var controlsButtonsLatched = false;
     var controlsJOY0ButtonPressed = false;
     var controlsJOY1ButtonPressed = false;
 
     var paddleCapacitorsGrounded = false;
-    var paddle0Position = -1;			    // 380 = Left, 190 = Middle, 0 = Right. -1 = disconnected, won't charge POTs
+    var paddle0Position = -1;			                                    // 380 = Left, 190 = Middle, 0 = Right. -1 = disconnected, won't charge POTs
     var paddle0CapacitorCharge = 0;
     var paddle1Position = -1;
     var paddle1CapacitorCharge = 0;
 
-    var videoSignal = new jt.TiaVideoSignal();
+
+    var playerLineSprites = new Uint8Array(2 * 256 * 8 * 64);               // 2 Mirrors * 256 Patterns * 8 Variations * (1 base + 2 alts) * 20 8Bits line data specifying 1bit pixels + 4 bytes spare
+    var missileBallLineSprites = new Uint8Array(4 * 8 * 64);                // 4 Sizes * 8 Variations * (1 base + 2 alts) * 20 8Bits line data specifying 1bit pixels + 4 bytes spare
+
+    var playerCopyLengthPerShape = new Uint8Array([13, 13, 13, 13, 13, 22, 13, 38]);
+    var playerScanStartPerShape =  new Uint8Array([5, 5, 5, 5, 5, 6, 5, 6]);
+    var playerPixelSizePerShape =  new Uint8Array([1, 1, 1, 1, 1, 2, 1, 4]);
+
+    var playerCopyOffsetsReset = new Uint8Array(8 * 160);                   // 8 Variations * 160 1 byte data with copy pixel position
+    var playerScanOffsetsShape = new Uint8Array(8 * 160);                   // 8 Variations * 160 1 byte data with copy pixel position
+
+    var missileCopyOffsetsReset = new Uint8Array(4 * 8 * 160);              // 4 Sizes * 8 Variations * 160 1 byte data with copy pixel position
+    var missileScanOffsetsShape = new Uint8Array(4 * 8 * 160);              // 4 Sizes * 8 Variations * 160 1 byte data with copy pixel position
+
+    var objectsLineSpritePointerDeltaToSingleCopy = new Uint16Array([0 * 64, 1 * 64, 2 * 64, 3 * 64, 4 * 64, 0 * 64, 6 * 64, 0 * 64]);
+
+    var missileCenterOffsetsPerPlayerSize = new Uint8Array([ 5, 5, 5, 5, 5, 10, 5, 18 ]);
+
+    var videoSignal = new jt.VideoSignal();
     var palette;
 
-    var audioSignal = new jt.TiaAudioSignal();
+    var audioSignal = new jt.TiaAudio(audioSocket);
 
 
     // Read registers -------------------------------------------
 
-    var CXM0P  = 0;     // collision M0-P1, M0-P0 (Bit 7,6)
-    var CXM1P  = 0;     // collision M1-P0, M1-P1
-    var CXP0FB = 0;	    // collision P0-PF, P0-BL
-    var CXP1FB = 0;	    // collision P1-PF, P1-BL
-    var CXM0FB = 0;	    // collision M0-PF, M0-BL
-    var CXM1FB = 0;	    // collision M1-PF, M1-BL
-    var CXBLPF = 0;	    // collision BL-PF, unused
-    var CXPPMM = 0;	    // collision P0-P1, M0-M1
     var INPT0 =  0;     // Paddle0 Left pot port
     var INPT1 =  0;     // Paddle0 Right pot port
     var INPT2 =  0;     // Paddle1 Left pot port
@@ -1370,19 +1694,53 @@ jt.Tia = function(pCpu, pPia) {
 
     // Write registers  ------------------------------------------
 
-    var PF0;		// 1111....  playfield register byte 0
-    var PF1;		// 11111111  playfield register byte 1
-    var PF2;		// 11111111  playfield register byte 2
-    var AUDC0;		// ....1111  audio control 0
-    var AUDC1;		// ....1111  audio control 1
-    var AUDF0;		// ...11111  audio frequency 0
-    var AUDF1;		// ...11111  audio frequency 1
-    var AUDV0;		// ....1111  audio volume 0
-    var AUDV1;		// ....1111  audio volume 1
-    var HMP0;		// 1111....  horizontal motion player 0
-    var HMP1;		// 1111....  horizontal motion player 1
-    var HMM0;		// 1111....  horizontal motion missile 0
-    var HMM1;		// 1111....  horizontal motion missile 1
-    var HMBL;		// 1111....  horizontal motion ball
+    var CTRLPF = 0;     // ..11.111  control playfield ball size & collisions
+    var COLUPF = 0;     // 11111111  playfield and ball color
+    var COLUBK = 0;     // 11111111  playfield background color
+    var PF0 = 0;		// 1111....  playfield register byte 0
+    var PF1 = 0;		// 11111111  playfield register byte 1
+    var PF2 = 0;		// 11111111  playfield register byte 2
+    var ENABL = 0;      // ......1.  graphics (enable) ball
+    var ENABLd = 0;     // ......1.  graphics (enable) ball
+    var VDELBL = 0;     // .......1  vertical delay ball
+
+    var NUSIZ0 = 0;     // ..111111  number-size player-missile 0
+    var COLUP0 = 0;     // 11111111  color-lum player 0 and missile 0
+    var REFP0 = 0;      // ....1...  reflect player 0 (>> 3)
+    var GRP0 = 0;       // 11111111  graphics player 0
+    var GRP0d = 0;      // 11111111  graphics player 0 (delayed)
+    var VDELP0 = 0;     // .......1  vertical delay player 0
+
+    var NUSIZ1 = 0;     // ..111111  number-size player-missile 1
+    var COLUP1 = 0;     // 11111111  color-lum player 1 and missile 1
+    var REFP1 = 0;      // ....1...  reflect player 1 (>> 3)
+    var GRP1 = 0;       // 11111111  graphics player 1
+    var GRP1d = 0;      // 11111111  graphics player 1 (delayed)
+    var VDELP1 = 0;     // .......1  vertical delay player 1
+
+    var ENAM0 = 0;      // ......1.  graphics (enable) missile 0
+    var RESMP0 = 0;     // ......1.  reset missile 0 to player 0
+
+    var ENAM1 = 0;      // ......1.  graphics (enable) missile 1
+    var RESMP1 = 0;     // ......1.  reset missile 1 to player 1
+
+    var HMP0 = 0;		// 1111....  horizontal motion player 0
+    var HMP1 = 0;		// 1111....  horizontal motion player 1
+    var HMM0 = 0;		// 1111....  horizontal motion missile 0
+    var HMM1 = 0;		// 1111....  horizontal motion missile 1
+    var HMBL = 0;		// 1111....  horizontal motion ball
+
+    var AUDC0 = 0;		// ....1111  audio control 0
+    var AUDC1 = 0;		// ....1111  audio control 1
+    var AUDF0 = 0;		// ...11111  audio frequency 0
+    var AUDF1 = 0;		// ...11111  audio frequency 1
+    var AUDV0 = 0;		// ....1111  audio volume 0
+    var AUDV1 = 0;		// ....1111  audio volume 1
+
+    init();
+
+    self.eval = function(code) {
+        return eval(code);
+    }
 
 };

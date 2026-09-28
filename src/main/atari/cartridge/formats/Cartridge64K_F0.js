@@ -3,6 +3,7 @@
 // Implements the 64K "F0" Dynacom Megaboy format
 
 jt.Cartridge64K_F0 = function(rom, format) {
+"use strict";
 
     function init(self) {
         self.rom = rom;
@@ -37,7 +38,7 @@ jt.Cartridge64K_F0 = function(rom, format) {
         return {
             f: this.format.name,
             r: this.rom.saveState(),
-            b: btoa(jt.Util.uInt8ArrayToByteString(bytes)),
+            b: jt.Util.compressInt8BitArrayToStringBase64(bytes),
             bo: bankAddressOffset
         };
     };
@@ -45,7 +46,7 @@ jt.Cartridge64K_F0 = function(rom, format) {
     this.loadState = function(state) {
         this.format = jt.CartridgeFormats[state.f];
         this.rom = jt.ROM.loadState(state.r);
-        bytes = jt.Util.byteStringToUInt8Array(atob(state.b));
+        bytes = jt.Util.uncompressStringBase64ToInt8BitArray(state.b, bytes);
         bankAddressOffset = state.bo;
     };
 
@@ -65,8 +66,8 @@ jt.Cartridge64K_F0 = function(rom, format) {
 
 jt.Cartridge64K_F0.prototype = jt.Cartridge.base;
 
-jt.Cartridge64K_F0.createFromSaveState = function(state) {
-    var cart = new jt.Cartridge64K_F0();
+jt.Cartridge64K_F0.recreateFromSaveState = function(state, prevCart) {
+    var cart = prevCart || new jt.Cartridge64K_F0();
     cart.loadState(state);
     return cart;
 };

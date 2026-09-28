@@ -1,6 +1,7 @@
 // Copyright 2015 by Paulo Augusto Peccin. See license.txt distributed with this file.
 
 jt.Cartridge = function() {
+"use strict";
 
     this.powerOn = function() {
     };
@@ -21,6 +22,10 @@ jt.Cartridge = function() {
         // Writing to ROMs is possible, but nothing is changed
     };
 
+    this.getDataDesc = function() {
+        return null;
+    };
+
     this.needsBusMonitoring = function() {
         return false;
     };
@@ -36,18 +41,6 @@ jt.Cartridge = function() {
     };
 
     this.audioClockPulse = function() {
-    };
-
-
-     // Controls interface  ---------------------------------
-
-    this.controlStateChanged = function(control, state) {
-    };
-
-    this.controlValueChanged = function(control, position) {
-    };
-
-    this.controlsStateReport = function(report) {
     };
 
 

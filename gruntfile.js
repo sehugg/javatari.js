@@ -4,37 +4,37 @@ module.exports = function (grunt) {
         pkg: grunt.file.readJSON("package.json"),
 
         clean: {
-            init: ["temp", "release"],
+            init: ["temp", "release/stable/4.0"],
             finish: ["temp"]
         },
 
-        copy: {
-            main: {
-                files: [
-                    {src: ["src/release/*"], dest: "release/", expand: true, flatten: true, filter: "isFile"},
-                    {src: ["src/main/images/*"], dest: "release/javatari/", expand: true, flatten: true, filter: "isFile"}
-                ]
-            }
-        },
-
         concat: {
-            part: {
+            emuPart: {
                 src: [
+                    "src/main/room/screen/FullScreenSetup.js",
                     "src/main/util/Util.js",
+                    "src/main/util/MD5.js",
+                    "src/main/util/ZIP.js",
+                    "src/main/util/EmbeddedFiles.js",
+                    "src/main/util/MultiDownloader.js",
+                    "src/main/util/MultiFileReader.js",
+                    "src/main/atari/video/VideoStandard.js",
+                    "src/main/atari/video/VideoSignal.js",
+                    "src/main/atari/audio/AudioSignal.js",
                     "src/main/atari/cpu/M6502.js",
                     "src/main/atari/pia/Ram.js",
                     "src/main/atari/pia/Pia.js",
-                    "src/main/atari/tia/VideoStandard.js",
-                    "src/main/atari/tia/TiaVideoSignal.js",
-                    "src/main/atari/tia/TiaAudioSignal.js",
+                    "src/main/atari/tia/TiaPalettes.js",
+                    "src/main/atari/tia/TiaAudio.js",
                     "src/main/atari/tia/TiaAudioChannel.js",
                     "src/main/atari/tia/Tia.js",
-                    "src/main/atari/console/Bus.js",
                     "src/main/atari/console/Clock.js",
-                    "src/main/atari/controls/ConsoleControls.js",
+                    "src/main/atari/console/Bus.js",
                     "src/main/atari/console/AtariConsole.js",
+                    "src/main/atari/controls/JoystickButtons.js",
+                    "src/main/atari/controls/ConsoleControls.js",
                     "src/main/atari/cartridge/ROM.js",
-                    "src/main/atari/cartridge/CartridgeInfoLibrary.js",
+                    "src/main/atari/cartridge/CartridgeDatabase.js",
                     "src/main/atari/cartridge/Cartridge.js",
                     "src/main/atari/cartridge/formats/Cartridge4K.js",
                     "src/main/atari/cartridge/formats/Cartridge2K_CV.js",
@@ -54,38 +54,57 @@ module.exports = function (grunt) {
                     "src/main/atari/cartridge/formats/Cartridge8K_0840.js",
                     "src/main/atari/cartridge/formats/Cartridge8K_UA.js",
                     "src/main/atari/cartridge/CartridgeFormats.js",
-                    "src/main/atari/cartridge/CartridgeDatabase.js",
-                    "src/main/util/MD5.js",
-                    "src/main/util/ZIP.js",
-                    "src/main/room/controls/Keys.js",
-                    "src/main/room/Preferences.js",
+                    "src/main/atari/cartridge/CartridgeCreator.js",
+                    "src/main/images/Images.js",
+                    "src/main/room/files/RecentStoredROMs.js",
+                    "src/main/room/files/FileLoader.js",
+                    "src/main/room/files/FileDownloader.js",
+                    "src/main/room/controls/DOMKeys.js",
+                    "src/main/room/controls/GamepadButtons.js",
+                    "src/main/room/controls/TouchControls.js",
                     "src/main/room/controls/GamepadConsoleControls.js",
+                    "src/main/room/controls/DOMTouchControls.js",
                     "src/main/room/controls/DOMConsoleControls.js",
-                    "src/main/room/screen/DOMMonitorControls.js",
+                    "src/main/room/screen/ScreenGUI.es6.js",
                     "src/main/room/screen/Monitor.js",
-                    "src/main/room/screen/CanvasDisplay.js",
                     "src/main/room/screen/ConsolePanel.js",
+                    "src/main/room/screen/CanvasDisplay.js",
+                    "src/main/room/screen/dialogs/RecentROMsDialog.js",
+                    "src/main/room/screen/dialogs/SaveStateDialog.js",
+                    "src/main/room/screen/dialogs/QuickOptionsDialog.js",
+                    "src/main/room/screen/settings/SettingsGUI.es6.js",
+                    "src/main/room/screen/settings/Settings.js",
                     "src/main/room/speaker/WebAudioSpeaker.js",
                     "src/main/room/savestate/LocalStorageSaveStateMedia.js",
-                    "src/main/room/cartridge/ROMLoader.js",
-                    "src/main/room/settings/Settings.js",
-                    "src/main/room/settings/SettingsGUI.js",
+                    "src/main/room/controls/PeripheralControls.js",
+                    "src/main/room/controls/DOMPeripheralControls.js",
                     "src/main/room/Room.js",
-                    "src/main/room/Launcher.js"
+                    "src/main/userprefs/UserPreferences.js",
+                    "src/runtime/images/EmbeddedImages.js",
+                    "src/main/Configurator.js",
+                    "src/main/Launcher.js"
                 ],
-                dest: "temp/javatari.part.concat.js"
+                dest: "temp/javatari.part.js"
             },
-            final: {
+            emuFinal: {
                 src: [
                     "src/main/Javatari.js",
                     "temp/javatari.part.min.js"
                 ],
-                dest: "release/javatari/javatari.js"
+                dest: "temp/javatari.js"
+            },
+           standalone: {
+                src: [
+                    "src/runtime/standalone/index.part1.html",
+                    "temp/javatari.js",
+                    "src/runtime/standalone/index.part2.html"
+                ],
+                dest: "temp/index.html"
             }
         },
 
         uglify: {
-            part: {
+            emuPart: {
                 options: {
                     maxLineLen: 7900,
                     mangle: {
@@ -108,8 +127,26 @@ module.exports = function (grunt) {
                     }
                 },
                 files: {
-                    "temp/javatari.part.min.js": ["temp/javatari.part.concat.js"]
+                    "temp/javatari.part.min.js": ["temp/javatari.part.js"]
                 }
+            }
+        },
+
+        copy: {
+            standalone: {
+                files: [
+                    {src: "temp/index.html", dest: "release/stable/4.0/standalone", expand: true, flatten: true, filter: "isFile"},
+                    {src: "src/runtime/standalone/cache.manifest", dest: "release/stable/4.0/standalone", expand: true, flatten: true, filter: "isFile"},
+                    {src: "src/runtime/standalone/manifest.webapp", dest: "release/stable/4.0/standalone", expand: true, flatten: true, filter: "isFile"},
+                    {src: "src/runtime/images/files/logo-icon192.png", dest: "release/stable/4.0/standalone/images", expand: true, flatten: true, filter: "isFile"},
+                    {src: "src/runtime/images/files/logo-icon512.png", dest: "release/stable/4.0/standalone/images", expand: true, flatten: true, filter: "isFile"}
+                ]
+            },
+            embedded: {
+                files: [
+                    {src: "src/runtime/embedded/index.html", dest: "release/stable/4.0/embedded", expand: true, flatten: true, filter: "isFile"},
+                    {src: "temp/javatari.js", dest: "release/stable/4.0/embedded", expand: true, flatten: true, filter: "isFile"}
+                ]
             }
         }
     });
@@ -118,5 +155,15 @@ module.exports = function (grunt) {
     grunt.loadNpmTasks("grunt-contrib-concat");
     grunt.loadNpmTasks("grunt-contrib-uglify");
     grunt.loadNpmTasks("grunt-contrib-copy");
-    grunt.registerTask("default", ["clean:init", "copy:main", "concat:part", "uglify:part", "concat:final", "clean:finish"]);
+    grunt.registerTask("default", [
+        "clean:init",
+        "concat:emuPart",
+        "uglify:emuPart",
+        "concat:emuFinal",
+        "concat:standalone",
+        "copy:standalone",
+        "copy:embedded",
+        "clean:finish"
+    ]);
+
 };
