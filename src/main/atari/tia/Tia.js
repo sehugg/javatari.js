@@ -1377,6 +1377,7 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
 
             au0: audioSignal.getChannel0().saveState(),
             au1: audioSignal.getChannel1().saveState(),
+            aul: audioSignal.getLastSample(),
 
             lpx: jt.Util.storeInt32BitArrayToStringBase64(linePixels),
 
@@ -1610,6 +1611,7 @@ jt.Tia = function(pCpu, pPia, audioSocket) {
         if (s.au0) {                                        // generator internals, after the registers above
             audioSignal.getChannel0().loadState(s.au0);
             audioSignal.getChannel1().loadState(s.au1);
+            audioSignal.setLastSample(s.aul || 0);
         }
 
         if (debug) debugSetColors();						// IF debug is on, ensure debug colors are used

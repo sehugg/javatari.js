@@ -1086,6 +1086,7 @@ jt.M6502 = function() {
             fetchOpcodeAndDecodeInstruction,
             function() {
                 illegalOpcode("KIL/HLT/JAM");
+                if (self.onHalt) self.onHalt(PC - 1);
             },
             function() {
                 T--;        // Causes the processor to be stuck in this instruction forever
@@ -1750,6 +1751,7 @@ jt.M6502 = function() {
     this.isStable = function() { return T === 0; };
     this.getPC = function() { return (PC - 1) & 0xffff; };
     this.getSP = function() { return SP; };
+    this.onHalt = null;     // called with the address of a KIL opcode when the CPU jams
 
 
     // Accessory methods

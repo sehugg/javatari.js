@@ -35,6 +35,15 @@ jt.TiaAudio = function() {
         disconnectAudio();
     };
 
+    // Damper state, for savestates
+    this.getLastSample = function() {
+        return lastSample;
+    };
+
+    this.setLastSample = function(val) {
+        lastSample = val;
+    };
+
     this.reset = function() {
         channel0.setVolume(0);
         channel1.setVolume(0);
