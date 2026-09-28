@@ -229,6 +229,7 @@ jt.AtariConsole = function() {
             p: pia.saveState(),
             r: ram.saveState(),
             c: cpu.saveState(),
+            b: bus.saveState(),
             ca: getCartridge() && getCartridge().saveState(),
             vs: videoStandard.name
         };
@@ -240,6 +241,7 @@ jt.AtariConsole = function() {
         pia.loadState(state.p);
         ram.loadState(state.r);
         cpu.loadState(state.c);
+        if (state.b) bus.loadState(state.b);
         setCartridge(state.ca && jt.CartridgeCreator.recreateCartridgeFromSaveState(state.ca, getCartridge()));
         setVideoStandard(jt.VideoStandard[state.vs]);
         consoleControlsSocket.controlsStatesRedefined();

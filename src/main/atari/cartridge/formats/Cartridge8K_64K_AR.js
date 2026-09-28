@@ -12,6 +12,8 @@ jt.Cartridge8K_64K_AR = function(rom, format) {
         // Also, ROM content represents the entire tape and can have multiple parts
         bytes = jt.Util.arrayFill(new Array(4 * BANK_SIZE));
         loadBIOS();
+        // Initialize Random seeds
+        for (var i = 0; i < 31; ++i) randomSeeds[i] = (Math.random() * 256) | 0;
     }
 
     this.powerOn = function() {
@@ -50,7 +52,7 @@ jt.Cartridge8K_64K_AR = function(rom, format) {
         address &= 0x1fff;
 
         // Set ControlRegister if the hotspot was triggered
-        if (address == 0x1ff8) {
+        if (address === 0x1ff8) {
             setControlRegister(valueToWrite);
             return;
         }
@@ -174,8 +176,7 @@ jt.Cartridge8K_64K_AR = function(rom, format) {
         // Patch BIOS interface area with correct values from stored Header data
         bytes[BIOS_BANK_OFFSET + BIOS_INT_CONTROL_REG_ADDR - 0xf800] = romControlRegister;
         bytes[BIOS_BANK_OFFSET + BIOS_INT_PART_NO_ADDR - 0xf800] = romMultiLoadIndex;
-        // TODO This random is a source of indeterminism. Potential problem in multiplayer sync
-        bytes[BIOS_BANK_OFFSET + BIOS_INT_RANDOM_SEED_ADDR - 0xf800] = ((Math.random() * 256) | 0);
+        bytes[BIOS_BANK_OFFSET + BIOS_INT_RANDOM_SEED_ADDR - 0xf800] = randomSeeds[currentRandomSeed++]; if (currentRandomSeed > 30) currentRandomSeed = 0;
         bytes[BIOS_BANK_OFFSET + BIOS_INT_START_ADDR - 0xf800] = romStartupAddress & 0xff;
         bytes[BIOS_BANK_OFFSET + BIOS_INT_START_ADDR + 1 - 0xf800] = (romStartupAddress >> 8) & 0xff;
         signalPartLoadedOK(true);
@@ -194,13 +195,9 @@ jt.Cartridge8K_64K_AR = function(rom, format) {
     var bus;
 
     var bytes;
-    var maskedAddress;
-
-    var HEADER_SIZE = 256;
 
     var bank0AddressOffset = 0;
     var bank1AddressOffset = 0;
-    var header = jt.Util.arrayFill(new Array(HEADER_SIZE), 0);
     var valueToWrite = 0;
     var writeEnabled = false;
     var lastAddress = -1;
@@ -215,14 +212,21 @@ jt.Cartridge8K_64K_AR = function(rom, format) {
     var romProgressBarSpeed = 0;
     var romPageOffsets;
 
+    var randomSeeds = new Array(31);    // Circular Random seeds pre-determined at init() and preserved at saveStates to avoid indeterminism
+    var currentRandomSeed = 0;
+
     var tapeOffset = 0;
 
+    var HEADER_SIZE = 256;
+    var header = jt.Util.arrayFill(new Array(HEADER_SIZE), 0);      // local buffer, not part of the state
+
+    var maskedAddress;
 
     var BIOS_INT_PART_NO_ADDR 		= 0xfb00;
     var BIOS_INT_CONTROL_REG_ADDR	= 0xfb01;
     var BIOS_INT_START_ADDR 		= 0xfb02;
     var BIOS_INT_RANDOM_SEED_ADDR	= 0xfb04;
-    var BIOS_INT_PART_LOADED_OK	= 0xfb05;
+    var BIOS_INT_PART_LOADED_OK 	= 0xfb05;
     var BIOS_INT_EMUL_LOAD_HOTSPOT	= 0x0c00;
 
     var PAGE_SIZE = 256;
@@ -244,15 +248,49 @@ jt.Cartridge8K_64K_AR = function(rom, format) {
     this.saveState = function() {
         return {
             f: this.format.name,
-            r: this.rom.saveState(),
-            b: jt.Util.compressInt8BitArrayToStringBase64(bytes)
+            r: this.rom.saveState(true),    // ROM contents needed for later part loads
+            b: jt.Util.compressInt8BitArrayToStringBase64(bytes),
+            b0o: bank0AddressOffset,
+            b1o: bank1AddressOffset,
+            vw: valueToWrite,
+            we: writeEnabled,
+            la: lastAddress,
+            ac: addressChangeCountdown,
+            bp: biosRomPower,
+            rs: romStartupAddress,
+            rc: romControlRegister,
+            rp: romPageCount,
+            rk: romChecksum,
+            rm: romMultiLoadIndex,
+            rb: romProgressBarSpeed,
+            ro: romPageOffsets,
+            to: tapeOffset,
+            rnd: jt.Util.storeInt8BitArrayToStringBase64(randomSeeds),
+            rnc: currentRandomSeed
         };
     };
 
     this.loadState = function(state) {
         this.format = jt.CartridgeFormats[state.f];
-        this.rom = jt.ROM.loadState(state.r);
+        this.rom = rom = jt.ROM.loadState(state.r);
         bytes = jt.Util.uncompressStringBase64ToInt8BitArray(state.b, bytes);
+        bank0AddressOffset = state.b0o;
+        bank1AddressOffset = state.b1o;
+        valueToWrite = state.vw;
+        writeEnabled = state.we;
+        lastAddress = state.la;
+        addressChangeCountdown = state.ac;
+        biosRomPower = state.bp;
+        romStartupAddress = state.rs;
+        romControlRegister = state.rc;
+        romPageCount = state.rp;
+        romChecksum = state.rk;
+        romMultiLoadIndex = state.rm;
+        romProgressBarSpeed = state.rb;
+        romPageOffsets = state.ro;
+        tapeOffset = state.to;
+        jt.Util.restoreStringBase64ToInt8BitArray(state.rnd, randomSeeds);
+        currentRandomSeed = state.rnc;
     };
 
 
